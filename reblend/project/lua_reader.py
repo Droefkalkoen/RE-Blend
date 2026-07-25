@@ -46,6 +46,13 @@ __all__ = [
 #: Panel keys an RE project can define, in SDK convention order.
 PANELS = ("front", "back", "folded_front", "folded_back")
 
+#: Panels every device must define — except Players, which have no folded
+#: panels at all (GUI designer manual, "Defining the panels for Players").
+UNFOLDED_PANELS = ("front", "back")
+
+#: ``panel_type`` value that marks a Player device in device_2D.lua.
+PLAYER_PANEL_TYPE = "note_player"
+
 #: Key under which the jbox recorder tags the constructor name on the table it
 #: returns. Double-underscore prefix keeps it out of the way of real SDK keys.
 _JBOX_TAG = "__jbox"
@@ -200,6 +207,18 @@ class Device2D:
     format_version: str
     panels: dict[str, dict[str, Node2D]]
     source_path: Path
+    #: ``panel_type`` global, when the file declares one. Only Players set it.
+    panel_type: str | None = None
+
+    @property
+    def is_player(self) -> bool:
+        """Players have no folded panels and a narrower visible width."""
+        return self.panel_type == PLAYER_PANEL_TYPE
+
+    @property
+    def required_panels(self) -> tuple[str, ...]:
+        """Panels this device must define, given its type."""
+        return UNFOLDED_PANELS if self.is_player else PANELS
 
     def node(self, panel: str, name: str) -> Node2D | None:
         """Look up a node by name anywhere in a panel's tree."""
@@ -237,7 +256,14 @@ def _parse_device_globals(path: Path, globals_: dict[str, Any]) -> Device2D:
         if not isinstance(table, dict):
             raise LuaConfigError(path, f"panel '{panel}' is not a table")
         panels[panel] = _parse_device_panel(path, panel, table)
-    return Device2D(format_version=format_version, panels=panels, source_path=path)
+
+    panel_type = globals_.get("panel_type")
+    return Device2D(
+        format_version=format_version,
+        panels=panels,
+        source_path=path,
+        panel_type=panel_type if isinstance(panel_type, str) else None,
+    )
 
 
 def _parse_device_panel(path: Path, panel: str, table: dict[Any, Any]) -> dict[str, Node2D]:
@@ -335,11 +361,20 @@ class Widget:
 
     @property
     def node(self) -> str | None:
-        """The device_2D node this widget draws on (``graphics.node``)."""
+        """The device_2D node this widget draws on.
+
+        Almost every widget spells this ``graphics.node``, but the scripting
+        specification declares ``static_decoration`` and ``custom_display``
+        with ``graphics = { main_node = ... }``. Both spellings are accepted
+        on read: dropping one would silently detach those widgets from their
+        node, which then reads as "node has no widget" everywhere downstream.
+        """
         graphics = self.attrs.get("graphics")
         if isinstance(graphics, dict):
-            node = graphics.get("node")
-            return node if isinstance(node, str) else None
+            for key in ("node", "main_node"):
+                node = graphics.get(key)
+                if isinstance(node, str):
+                    return node
         return None
 
     @property
@@ -357,6 +392,21 @@ class HDPanel:
     graphics_node: str | None
     widgets: list[Widget]
     attrs: dict[str, Any]
+
+    @property
+    def cable_origin_node(self) -> str | None:
+        """The node named by this panel's ``cable_origin``, if it declares one.
+
+        Only ``folded_back`` may: the specification says cable_origin is
+        "Required for the folded back panel. Must not be present in any other
+        panel specification."
+        """
+        origin = self.attrs.get("cable_origin")
+        if isinstance(origin, dict):
+            node = origin.get("node")
+            if isinstance(node, str):
+                return node
+        return None
 
 
 @dataclass

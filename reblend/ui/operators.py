@@ -19,7 +19,7 @@ import bpy
 from mathutils import Vector
 
 from ..model import calibration, kinds, rigs, schema, state_tables
-from ..project import lua_writer, merge, validation
+from ..project import lua_writer, merge, sdk_parts, validation
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
 from ..project.lua_writer import PatchError
@@ -1309,10 +1309,27 @@ class REBLEND_OT_launch_tool(bpy.types.Operator):
     tool: bpy.props.EnumProperty(
         name="Tool",
         items=(
-            ("RENDER", "RE2DRender", "Compile GUI2D/ and generate the 0.5x set"),
+            ("RENDER", "RE2DRender", "Compile GUI2D/ into the build format"),
             ("PREVIEW", "RE2DPreview", "Render the panels for a quick look"),
         ),
         default="RENDER",
+    )
+    #: RE2DRender's third argument. Left off entirely, the tool renders *only*
+    #: the legacy lo-res (0.5x) form — which Reason/Recon 12 and later do not
+    #: use — so RE-Blend never omits it. "hi-res-only" skips the lo-res pass
+    #: and is the fast choice while iterating; "hi-res" produces both and is
+    #: what a submission build wants.
+    resolution: bpy.props.EnumProperty(
+        name="Resolution",
+        items=(
+            ("hi-res-only", "Hi-res only",
+             "Hi-res form only (Reason/Recon 12+); skips the lo-res pass"),
+            ("hi-res", "Hi-res + lo-res",
+             "Both forms — what a submission build needs"),
+            ("lo-res", "Lo-res only (legacy)",
+             "Omit the argument entirely: legacy lo-res form only"),
+        ),
+        default="hi-res-only",
     )
 
     def execute(self, context):
@@ -1340,6 +1357,8 @@ class REBLEND_OT_launch_tool(bpy.types.Operator):
             out_dir = root / "RE2DRender_Output"
             out_dir.mkdir(parents=True, exist_ok=True)
             args = [str(exe), str(gui2d), str(out_dir)]
+            if self.resolution != "lo-res":
+                args.append(self.resolution)
         else:
             args = [str(exe), str(gui2d)]
 
@@ -1349,6 +1368,89 @@ class REBLEND_OT_launch_tool(bpy.types.Operator):
             self.report({"ERROR"}, f"failed to launch {exe.name}: {exc}")
             return {"CANCELLED"}
         self.report({"INFO"}, "launched: " + " ".join(args))
+        return {"FINISHED"}
+
+
+class REBLEND_OT_install_sdk_parts(bpy.types.Operator):
+    """Copy the SDK's stock 2D parts into the linked project's GUI2D.
+
+    Sockets, the device-name tape, the back-panel placeholder, CV trim knobs
+    and the patch/sample browse groups have a fixed appearance: the scripting
+    specification says "you cannot change the appearance of this widget" and
+    the GUI design guidelines make using the Reason Studios-supplied image a
+    requirement. RE-Blend therefore never renders them — it installs them from
+    the SDK the user points at in the add-on preferences, under whatever
+    sprite name device_2D.lua already uses.
+    """
+
+    bl_idname = "reblend.install_sdk_parts"
+    bl_label = "Install SDK Parts"
+    bl_options = {"REGISTER", "UNDO"}
+
+    overwrite: bpy.props.BoolProperty(
+        name="Overwrite Existing",
+        description="Replace sheets already present in GUI2D",
+        default=False,
+    )
+
+    def execute(self, context):
+        preferences = props.tool_preferences(context)
+        raw = preferences.sdk_root if preferences is not None else ""
+        sdk_root = Path(bpy.path.abspath(raw)) if raw else None
+        if sdk_root is None or not sdk_root.is_dir():
+            self.report(
+                {"ERROR"},
+                "SDK root not set — configure it per machine in "
+                "Preferences > Add-ons > RE-Blend",
+            )
+            return {"CANCELLED"}
+
+        try:
+            root = _project_root(context)
+            link = load_project(root)
+        except LuaConfigError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        installed, skipped, missing = [], [], []
+        for panel_name, panel in link.hdgui.panels.items():
+            for widget in panel.widgets:
+                part = sdk_parts.stock_part_for_widget(widget.kind)
+                if part is None or not widget.node:
+                    continue
+                node = link.device.node(panel_name, widget.node)
+                if node is None or not node.graphics:
+                    continue
+                sprite = node.graphics[0].path
+                if sprite in installed or sprite in skipped or sprite in missing:
+                    continue  # one sheet may back several nodes
+                if not self.overwrite and (link.gui2d_dir / f"{sprite}.png").is_file():
+                    skipped.append(sprite)
+                    continue
+                try:
+                    sdk_parts.install_stock_part(
+                        part, sdk_root, link.gui2d_dir, sprite
+                    )
+                except (FileNotFoundError, OSError) as exc:
+                    missing.append(sprite)
+                    self.report({"WARNING"}, str(exc))
+                else:
+                    installed.append(sprite)
+
+        if not installed and not skipped and not missing:
+            self.report({"INFO"}, "no SDK-supplied parts in this project")
+            return {"FINISHED"}
+        summary = f"installed {len(installed)} SDK part(s)"
+        if skipped:
+            summary += f"; {len(skipped)} already present (enable Overwrite to replace)"
+        if missing:
+            severity = "ERROR" if not installed else "WARNING"
+            self.report(
+                {severity},
+                summary + f"; not found under the SDK root: {', '.join(missing)}",
+            )
+            return {"FINISHED"}
+        self.report({"INFO"}, summary)
         return {"FINISHED"}
 
 
@@ -1369,4 +1471,5 @@ CLASSES = (
     REBLEND_OT_contact_sheet,
     REBLEND_OT_flipbook,
     REBLEND_OT_launch_tool,
+    REBLEND_OT_install_sdk_parts,
 )

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from ..model import calibration, schema
+from ..model import calibration, kinds, schema
 from ..render.validators import check_frame_bounds
 from . import link as link_mod
 from .lua_reader import PANELS, Device2D, Graphic, HDGui2D, Node2D
@@ -115,12 +115,13 @@ def validate_project(
 
     _check_art_coverage(report, lua_graphics, by_path, lua_paths, elements)
     _check_widget_links(report, device, hdgui)
-    _check_steps(report, device, hdgui, dict(property_steps or {}))
+    _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
+    _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
         _check_files(report, elements, gui2d_dir)
-    _check_layout(report, elements, gui2d_dir)
+    _check_layout(report, elements, gui2d_dir, hdgui)
 
     if scene is not None and scene.view_transform is not None:
         if scene.view_transform != STANDARD_VIEW_TRANSFORM:
@@ -205,34 +206,138 @@ def _check_widget_links(report: Report, device: Device2D, hdgui: HDGui2D) -> Non
                 )
 
 
-_STEPPED_WIDGETS = ("sequence_fader", "step_button", "radio_button", "up_down_button")
-
-
-def _check_steps(
+def _check_frame_contracts(
     report: Report, device: Device2D, hdgui: HDGui2D, steps: dict[str, int]
 ) -> None:
-    if not steps:
-        return
+    """Enforce each widget's documented animation frame count.
+
+    Two distinct rules, from the SDK 4.6.0 scripting specification:
+
+    - Most animated widgets have a *fixed* frame count that has nothing to do
+      with the bound property (a ``radio_button`` is two frames whether its
+      property has 2 steps or 12; an ``up_down_button`` is three). Getting
+      this wrong makes the control misbehave silently, so it is an error.
+    - A ``sequence_fader`` bakes the handle's whole travel, so on a stepped
+      property its frame count should equal the property's ``steps``. That
+      one stays a warning: the fader may legitimately be driven by a
+      continuous property, or by ``value_switch``/``values`` rather than a
+      single ``value``, and the motherboard read is best-effort.
+    """
     for panel_name, panel in hdgui.panels.items():
         for widget in panel.widgets:
-            if widget.kind not in _STEPPED_WIDGETS or not widget.node or not widget.value:
+            if not widget.node:
+                continue
+            node = device.node(panel_name, widget.node)
+            if node is None:
+                continue  # already reported by _check_widget_links
+
+            rule = kinds.frame_rule_for_widget(widget.kind)
+            if rule is None:
+                continue
+
+            if not rule.permits(node.frames):
+                note = f" ({rule.note})" if rule.note else ""
+                report.add(
+                    ERROR,
+                    "widget-frames",
+                    f"{widget.kind} on node '{widget.node}' declares "
+                    f"{node.frames} frames but the SDK requires "
+                    f"{rule.describe()}{note}",
+                    subject=widget.node,
+                    panel=panel_name,
+                )
+
+            if not rule.steps_bound or not steps or not widget.value:
                 continue
             declared = steps.get(widget.value)
-            if declared is None:
-                continue
-            handle = widget.attrs.get("handle_size", 0)
-            if widget.kind == "sequence_fader" and isinstance(handle, (int, float)) and handle > 0:
-                continue  # 1-frame moving handle: frames independent of steps (§10.4)
-            node = device.node(panel_name, widget.node)
-            if node is not None and node.frames != declared:
+            if declared is not None and node.frames != declared:
                 report.add(
                     WARNING,
                     "steps",
                     f"{widget.kind} on node '{widget.node}' has {node.frames} frames "
-                    f"but its property {widget.value} has {declared} steps",
+                    f"but its property {widget.value} has {declared} steps — a fader "
+                    "bakes one frame per handle position, so a stepped property "
+                    "wants one frame per step",
                     subject=widget.node,
                     panel=panel_name,
                 )
+
+
+def _check_panel_requirements(report: Report, device: Device2D, hdgui: HDGui2D) -> None:
+    """Structural requirements the GUI design guidelines impose on every device.
+
+    RE2DRender catches some of these (a missing panel aborts the read); the
+    rest are submission-review requirements it happily lets through, which is
+    exactly the silent-failure class RE-Blend exists to close.
+    """
+    required = device.required_panels
+    for panel in required:
+        if panel not in device.panels:
+            report.add(
+                ERROR,
+                "panel-missing",
+                f"device_2D.lua declares no '{panel}' panel",
+                panel=panel,
+            )
+        if panel not in hdgui.panels:
+            report.add(
+                ERROR,
+                "panel-missing",
+                f"hdgui_2D.lua declares no '{panel}' panel",
+                panel=panel,
+            )
+
+    if device.is_player:
+        for panel in ("folded_front", "folded_back"):
+            if panel in device.panels or panel in hdgui.panels:
+                report.add(
+                    WARNING,
+                    "player-folded",
+                    f"device declares panel_type = 'note_player' but still defines "
+                    f"'{panel}' — Players have no folded panels",
+                    panel=panel,
+                )
+        return
+
+    for panel_name, panel in hdgui.panels.items():
+        origin = panel.cable_origin_node
+        if panel_name == "folded_back":
+            if origin is None:
+                report.add(
+                    ERROR,
+                    "cable-origin",
+                    "the folded back panel must declare cable_origin = { node = ... } "
+                    "naming a point node in device_2D.lua",
+                    panel=panel_name,
+                )
+            elif device.node(panel_name, origin) is None:
+                report.add(
+                    ERROR,
+                    "cable-origin",
+                    f"cable_origin names node '{origin}', which does not exist in "
+                    "device_2D.lua",
+                    subject=origin,
+                    panel=panel_name,
+                )
+        elif origin is not None:
+            report.add(
+                ERROR,
+                "cable-origin",
+                "cable_origin must appear only on the folded back panel",
+                subject=origin,
+                panel=panel_name,
+            )
+
+    back = hdgui.panels.get("back")
+    if back is not None and not any(w.kind == "placeholder" for w in back.widgets):
+        report.add(
+            ERROR,
+            "placeholder",
+            "the back panel must declare a jbox.placeholder — Reason reserves "
+            f"{calibration.PLACEHOLDER_SIZE_PX[0]}x{calibration.PLACEHOLDER_SIZE_PX[1]} "
+            "px there for future controls",
+            panel="back",
+        )
 
 
 def _check_kinds(
@@ -303,6 +408,23 @@ def _check_files(
                 f"path says '{expected}' — case mismatch breaks case-sensitive builds",
                 subject=element.path,
             )
+        elif kinds.is_sdk_supplied(element.kind):
+            report.add(
+                WARNING,
+                "png-missing",
+                f"'{expected}' not found in GUI2D — this part's art comes from the "
+                "SDK, not from a render (RE-Blend > Install SDK Parts)",
+                subject=element.path,
+            )
+        elif not kinds.renders_art(element.kind):
+            report.add(
+                WARNING,
+                "png-missing",
+                f"'{expected}' not found in GUI2D — Reason draws this widget's "
+                "contents itself and uses the graphics only as a bounding box, so "
+                "the sheet just needs to be the right size",
+                subject=element.path,
+            )
         else:
             report.add(
                 WARNING,
@@ -339,50 +461,175 @@ def _check_png(report: Report, element: schema.ElementData, path: Path) -> None:
         )
 
 
+@dataclass(frozen=True)
+class _Rect:
+    """One placed element's rectangle plus what validation needs to judge it."""
+
+    path: str
+    node: str
+    x: float
+    y: float
+    w: int
+    h: int
+    kind: str
+    #: True when a static_decoration binds this node — those are explicitly
+    #: allowed to sit under other widgets (that is how the SDK's hideable
+    #: widgets get a background).
+    decoration: bool = False
+    #: True when every widget on the node has a visibility_switch, so it can
+    #: be hidden while a neighbour is shown.
+    hideable: bool = False
+
+    @property
+    def right(self) -> float:
+        return self.x + self.w
+
+    @property
+    def bottom(self) -> float:
+        return self.y + self.h
+
+    def intersects(self, other: "_Rect") -> bool:
+        return (
+            self.x < other.right
+            and other.x < self.right
+            and self.y < other.bottom
+            and other.y < self.bottom
+        )
+
+
+def _node_widget_index(hdgui: HDGui2D | None) -> dict[tuple[str, str], list]:
+    """(panel, node) -> the widgets bound to it."""
+    index: dict[tuple[str, str], list] = {}
+    if hdgui is None:
+        return index
+    for panel_name, panel in hdgui.panels.items():
+        for widget in panel.widgets:
+            if widget.node:
+                index.setdefault((panel_name, widget.node), []).append(widget)
+    return index
+
+
 def _check_layout(
-    report: Report, elements: Sequence[schema.ElementData], gui2d_dir: Path | None
+    report: Report,
+    elements: Sequence[schema.ElementData],
+    gui2d_dir: Path | None,
+    hdgui: HDGui2D | None = None,
 ) -> None:
     panel_sizes = _panel_sizes(elements, gui2d_dir)
+    widget_index = _node_widget_index(hdgui)
 
-    rects: dict[str, list[tuple[str, str, float, float, int, int]]] = {}
+    rects: dict[str, list[_Rect]] = {}
     for element in elements:
-        if element.kind == "backdrop" or not element.has_frame_size:
+        if element.kind == kinds.BACKDROP or not element.has_frame_size:
             continue
         for placement in element.placements:
+            bound = widget_index.get((placement.panel, placement.node), [])
             rects.setdefault(placement.panel, []).append(
-                (
-                    element.path,
-                    placement.node,
-                    placement.x,
-                    placement.y,
-                    element.frame_w,
-                    element.frame_h,
+                _Rect(
+                    path=element.path,
+                    node=placement.node,
+                    x=placement.x,
+                    y=placement.y,
+                    w=element.frame_w,
+                    h=element.frame_h,
+                    kind=element.kind,
+                    decoration=any(w.kind == "static_decoration" for w in bound),
+                    hideable=bool(bound)
+                    and all("visibility_switch" in w.attrs for w in bound),
                 )
             )
 
     for panel, panel_rects in rects.items():
         size = panel_sizes.get(panel)
         if size is not None:
-            for path, node, x, y, w, h in panel_rects:
-                if x < 0 or y < 0 or x + w > size.width or y + h > size.height:
-                    report.add(
-                        WARNING,
-                        "bounds",
-                        f"node '{node}' at ({x:g}, {y:g}) size {w}x{h} extends outside "
-                        f"the {size.width}x{size.height} panel",
-                        subject=path,
-                        panel=panel,
-                    )
-        for i, (path_a, node_a, xa, ya, wa, ha) in enumerate(panel_rects):
-            for path_b, node_b, xb, yb, wb, hb in panel_rects[i + 1 :]:
-                if xa < xb + wb and xb < xa + wa and ya < yb + hb and yb < ya + ha:
-                    report.add(
-                        WARNING,
-                        "overlap",
-                        f"nodes '{node_a}' and '{node_b}' overlap",
-                        subject=f"{node_a}+{node_b}",
-                        panel=panel,
-                    )
+            _check_panel_bounds(report, panel, panel_rects, size)
+        for i, a in enumerate(panel_rects):
+            for b in panel_rects[i + 1 :]:
+                if not a.intersects(b):
+                    continue
+                # "Widget boundaries may not overlap, except for
+                # static_decoration widgets or widgets with a visibility
+                # switch (which can not overlap if it is possible that they
+                # are visible at the same time)."
+                if a.decoration or b.decoration or (a.hideable and b.hideable):
+                    continue
+                report.add(
+                    WARNING,
+                    "overlap",
+                    f"nodes '{a.node}' and '{b.node}' overlap",
+                    subject=f"{a.node}+{b.node}",
+                    panel=panel,
+                )
+
+
+def _check_panel_bounds(
+    report: Report, panel: str, panel_rects: list[_Rect], size: calibration.PanelSize
+) -> None:
+    """Panel-edge requirements: inside the panel, clear of the side margins."""
+    if not calibration.is_folded(panel):
+        units = calibration.rack_units_for_height(size.height)
+        if units is None:
+            report.add(
+                ERROR,
+                "rack-height",
+                f"the {panel} backdrop is {size.height} px tall, which is not a whole "
+                f"number of {calibration.UNIT_HEIGHT_PX} px rack units",
+                panel=panel,
+            )
+        elif units > calibration.MAX_RACK_UNITS:
+            report.add(
+                ERROR,
+                "rack-height",
+                f"the device is {units}U tall; the rack allows at most "
+                f"{calibration.MAX_RACK_UNITS}U",
+                panel=panel,
+            )
+    elif size.height != calibration.FOLDED_HEIGHT_PX:
+        report.add(
+            ERROR,
+            "panel-size",
+            f"the {panel} backdrop is {size.height} px tall; folded panels must be "
+            f"exactly {calibration.FOLDED_HEIGHT_PX} px",
+            panel=panel,
+        )
+    if size.width != calibration.PANEL_WIDTH_PX:
+        report.add(
+            ERROR,
+            "panel-size",
+            f"the {panel} backdrop is {size.width} px wide; every panel image must be "
+            f"{calibration.PANEL_WIDTH_PX} px wide (narrower Player panels are cropped "
+            "from a full-width image)",
+            panel=panel,
+        )
+
+    margin = calibration.EDGE_MARGIN_PX
+    for rect in panel_rects:
+        if rect.x < 0 or rect.y < 0 or rect.right > size.width or rect.bottom > size.height:
+            report.add(
+                ERROR,
+                "bounds",
+                f"node '{rect.node}' at ({rect.x:g}, {rect.y:g}) size {rect.w}x{rect.h} "
+                f"extends outside the {size.width}x{size.height} panel — every widget "
+                "boundary must be completely inside its panel",
+                subject=rect.path,
+                panel=panel,
+            )
+            continue
+        if not kinds.is_interactive(rect.kind):
+            continue
+        if rect.x < margin or rect.right > size.width - margin:
+            # A warning, not an error: hit_boundaries can pull the interactive
+            # area inward from the widget rectangle, which legitimises a
+            # rectangle that reaches into the margin.
+            report.add(
+                WARNING,
+                "edge-margin",
+                f"interactive node '{rect.node}' reaches into the required {margin} px "
+                "left/right panel margin — inset it, or shrink its interactive area "
+                "with graphics.hit_boundaries",
+                subject=rect.path,
+                panel=panel,
+            )
 
 
 def _panel_sizes(

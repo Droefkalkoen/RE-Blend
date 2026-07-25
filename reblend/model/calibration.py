@@ -30,6 +30,14 @@ __all__ = [
     "PANEL_WIDTH_PX",
     "UNIT_HEIGHT_PX",
     "FOLDED_HEIGHT_PX",
+    "MAX_RACK_UNITS",
+    "PLAYER_VISIBLE_WIDTH_PX",
+    "EDGE_MARGIN_PX",
+    "PLACEHOLDER_SIZE_PX",
+    "SNAPSHOT_WIDTH_PX",
+    "SNAPSHOT_UNIT_HEIGHT_PX",
+    "SNAPSHOT_FOLDED_HEIGHT_PX",
+    "SNAPSHOT_FILENAMES",
     "DEFAULT_PPB",
     "DEFAULT_SWEEP_DEG",
     "CAMERA_DISTANCE",
@@ -80,12 +88,40 @@ def axis_vector(name: str) -> tuple[float, float, float]:
     """The unit world vector for a named axis, defaulting to the −Y view axis."""
     return AXIS_VECTORS.get(name, AXIS_VECTORS[DEFAULT_CAMERA_AXIS])
 
-#: The SDK's hi-res panel world (design §1): panels are 3770 px wide, 345 px
-#: per rack unit tall, 130 px folded — confirmed against RE2DRender, which
-#: derives the device's rack height from the backdrop PNGs (M0 finding 7).
+#: The SDK's hi-res panel world (design §1). Every number here is a stated
+#: *requirement* of the SDK 4.6.0 GUI design guidelines / GUI designer manual
+#: Table 1 — see docs/sdk-gui-reference.md. RE2DRender does not enforce them
+#: (it echoes back whatever backdrop size it is handed, which is how M0 came
+#: to record a folded height of 130); submission review does.
 PANEL_WIDTH_PX = 3770
 UNIT_HEIGHT_PX = 345
-FOLDED_HEIGHT_PX = 130
+FOLDED_HEIGHT_PX = 150
+
+#: Tallest device the rack accepts.
+MAX_RACK_UNITS = 9
+
+#: Player panels are narrower than the rack, but their *images* are still
+#: authored at PANEL_WIDTH_PX — the build pipeline crops the side margins.
+#: Only the visible width differs, and it differs front vs back.
+PLAYER_VISIBLE_WIDTH_PX = {"front": 3590, "back": 3180}
+
+#: Required empty margin along the left and right panel edges: no widget that
+#: responds to user input may intersect it. The same 25 px at the top and
+#: bottom edges is a guideline rather than a requirement.
+EDGE_MARGIN_PX = 25
+
+#: The reserved back-panel placeholder is a fixed size.
+PLACEHOLDER_SIZE_PX = (300, 100)
+
+#: Optional custom device thumbnails RE2DRender picks up from GUI2D/ when
+#: present and correctly sized (GUI designer manual Table 2).
+SNAPSHOT_WIDTH_PX = 754
+SNAPSHOT_UNIT_HEIGHT_PX = 69
+SNAPSHOT_FOLDED_HEIGHT_PX = 30
+SNAPSHOT_FILENAMES = {
+    "front": "ThumbSnapshotFront.png",
+    "folded_front": "ThumbSnapshotFoldedFront.png",
+}
 
 #: Default calibration: panel pixels per Blender unit.
 DEFAULT_PPB = 100.0
@@ -116,6 +152,21 @@ def panel_size_px(panel: str, rack_units: int = 1) -> PanelSize:
         raise ValueError(f"rack_units must be >= 1, got {rack_units}")
     height = FOLDED_HEIGHT_PX if is_folded(panel) else UNIT_HEIGHT_PX * rack_units
     return PanelSize(width=PANEL_WIDTH_PX, height=height)
+
+
+def snapshot_size_px(panel: str, rack_units: int = 1) -> PanelSize | None:
+    """Required size of a custom thumbnail snapshot, or None if the panel has none.
+
+    Only ``front`` and ``folded_front`` take custom snapshots, and RE2DRender
+    ignores a file whose dimensions don't match exactly.
+    """
+    if panel == "folded_front":
+        return PanelSize(SNAPSHOT_WIDTH_PX, SNAPSHOT_FOLDED_HEIGHT_PX)
+    if panel == "front":
+        if rack_units < 1:
+            raise ValueError(f"rack_units must be >= 1, got {rack_units}")
+        return PanelSize(SNAPSHOT_WIDTH_PX, SNAPSHOT_UNIT_HEIGHT_PX * rack_units)
+    return None
 
 
 def rack_units_for_height(height_px: int) -> int | None:

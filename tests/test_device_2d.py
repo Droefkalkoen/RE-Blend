@@ -46,6 +46,7 @@ def test_widget_nodes_live_in_unnamed_group(device):
         "knob_threshold",
         "SilenceSwitch",
         "lamp_group",
+        "logo_plate",
         "DeviceName",
     }
 
@@ -66,9 +67,11 @@ def test_node_lookup_finds_nested(device):
 
 def test_cable_origin_is_named_top_level_node_without_graphics(device):
     # CableOrigin stays a named top-level entry (like the backdrop), alongside
-    # the unnamed widget group.
-    origin = device.panels["back"]["CableOrigin"]
-    assert origin.offset == (1885, 172)
+    # the unnamed widget group. It belongs to folded_back only: the spec says
+    # cable_origin "must not be present in any other panel specification".
+    assert "CableOrigin" not in device.panels["back"]
+    origin = device.panels["folded_back"]["CableOrigin"]
+    assert origin.offset == (1885, 65)
     assert origin.graphics == []
     assert not origin.anonymous
 

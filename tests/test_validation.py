@@ -23,14 +23,16 @@ from reblend.project.validation import SceneInfo, validate_link
 SHEET_SIZES = {
     "Panel_Front": (3770, 690),
     "Panel_Back": (3770, 690),
-    "Panel_Folded_Front": (3770, 130),
-    "Panel_Folded_Back": (3770, 130),
+    "Panel_Folded_Front": (3770, 150),
+    "Panel_Folded_Back": (3770, 150),
     "Knob_65x65_61frames": (65, 65),
     "Button_50x35_2frames": (50, 35),
     "Lamp_15x15_2frames": (15, 15),
     "Tape_Horizontal_1frames": (390, 40),
     "Fader_25x60_3frames": (25, 60),
     "SharedAudioJack": (105, 105),
+    "Logo_120x40_1frames": (120, 40),
+    "Placeholder": (300, 100),
 }
 
 
@@ -184,7 +186,7 @@ def test_non_standard_view_transform_is_a_warning(project_dir):
     assert validate_link(link, elements, SceneInfo(view_transform=None)).findings == []
 
 
-def test_element_outside_panel_is_a_warning(project_dir):
+def test_element_outside_panel_is_an_error(project_dir):
     device = project_dir / "GUI2D" / "device_2D.lua"
     device.write_text(
         device.read_text(encoding="utf-8").replace(
@@ -194,8 +196,10 @@ def test_element_outside_panel_is_a_warning(project_dir):
     )
     link, elements = make_scene(project_dir)
     report = validate_link(link, elements)
+    # "All widget boundaries must be completely inside the boundaries of
+    # their corresponding panel" is a stated requirement, so this is an error.
     assert any(f.code == "bounds" and f.subject == "Button_50x35_2frames"
-               for f in report.warnings)
+               for f in report.errors)
 
 
 def test_overlapping_elements_are_a_warning(project_dir):
@@ -245,3 +249,171 @@ def test_report_severity_partition(project_dir):
     assert {f.severity for f in report.errors} == {"error"}
     assert {f.severity for f in report.warnings} == {"warning"}
     assert len(report.errors) + len(report.warnings) == len(report.findings)
+
+
+# ---------------------------------------------------------------------------
+# Per-widget frame contracts (SDK 4.6.0 scripting specification)
+# ---------------------------------------------------------------------------
+
+
+def retarget(project_dir, old, new):
+    """Rewrite a snippet in both GUI2D Lua files and re-read the project."""
+    for name in ("device_2D.lua", "hdgui_2D.lua"):
+        path = project_dir / "GUI2D" / name
+        path.write_text(path.read_text(encoding="utf-8").replace(old, new),
+                        encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "widget, frames, legal",
+    [
+        ("toggle_button", 2, True),
+        ("toggle_button", 4, True),   # off, off-held, on, on-held
+        ("toggle_button", 3, False),
+        ("momentary_button", 2, True),
+        ("momentary_button", 3, False),
+        # A step_button/radio_button animates released-vs-held and is always
+        # two frames, however many steps its property has.
+        ("step_button", 2, True),
+        ("step_button", 6, False),
+        ("radio_button", 2, True),
+        ("radio_button", 8, False),
+        ("up_down_button", 3, True),
+        ("up_down_button", 2, False),
+    ],
+)
+def test_widget_frame_counts(project_dir, widget, frames, legal):
+    retarget(project_dir, "jbox.toggle_button{", "jbox.%s{" % widget)
+    retarget(project_dir,
+             '{ path = "Button_50x35_2frames", frames = 2 }',
+             '{ path = "Button_50x35_2frames", frames = %d }' % frames)
+    link, elements = make_scene(project_dir)
+    # keep the element in step with the Lua so only the widget rule can fire
+    button = next(e for e in elements if e.path == "Button_50x35_2frames")
+    button.frames, button.frame_w, button.frame_h = frames, 50, 35
+    report = validate_link(link, elements)
+    offending = [f for f in report.errors if f.code == "widget-frames"]
+    assert (not offending) is legal, [f.message for f in offending]
+
+
+def test_static_decoration_may_not_be_animated(project_dir):
+    retarget(project_dir,
+             '{ path = "Logo_120x40_1frames" }',
+             '{ path = "Logo_120x40_1frames", frames = 2 }')
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    found = [f for f in report.errors if f.code == "widget-frames"]
+    assert found and "static_decoration" in found[0].message
+    assert "cannot be animated" in found[0].message
+
+
+def test_fader_frames_are_not_capped_by_a_fixed_count(project_dir):
+    """A sequence_fader bakes its whole travel, so any frame count is legal."""
+    retarget(project_dir,
+             '{ path = "Fader_25x60_3frames", frames = 3 }',
+             '{ path = "Fader_25x60_3frames", frames = 64 }')
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert not [f for f in report.errors if f.code == "widget-frames"]
+
+
+# ---------------------------------------------------------------------------
+# Panel-level requirements
+# ---------------------------------------------------------------------------
+
+
+def test_cable_origin_outside_folded_back_is_an_error(project_dir):
+    hdgui = project_dir / "GUI2D" / "hdgui_2D.lua"
+    hdgui.write_text(
+        hdgui.read_text(encoding="utf-8").replace(
+            'graphics = { node = "Panel_back_bg" },',
+            'graphics = { node = "Panel_back_bg" },\n\tcable_origin = { node = "CableOrigin" },',
+        ),
+        encoding="utf-8",
+    )
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    found = [f for f in report.errors if f.code == "cable-origin"]
+    assert found and found[0].panel == "back"
+
+
+def test_missing_cable_origin_is_an_error(project_dir):
+    hdgui = project_dir / "GUI2D" / "hdgui_2D.lua"
+    text = hdgui.read_text(encoding="utf-8")
+    # drop the second (folded_back) declaration only
+    head, sep, tail = text.rpartition('\tcable_origin = { node = "CableOrigin" },\n')
+    hdgui.write_text(head + tail, encoding="utf-8")
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert any(f.code == "cable-origin" and f.panel == "folded_back"
+               for f in report.errors)
+
+
+def test_missing_back_panel_placeholder_is_an_error(project_dir):
+    hdgui = project_dir / "GUI2D" / "hdgui_2D.lua"
+    hdgui.write_text(
+        hdgui.read_text(encoding="utf-8").replace(
+            'jbox.placeholder{\n\t\t\tgraphics = { node = "Placeholder" },\n\t\t},', ""
+        ),
+        encoding="utf-8",
+    )
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert any(f.code == "placeholder" for f in report.errors)
+
+
+def test_missing_panel_is_an_error(project_dir):
+    device = project_dir / "GUI2D" / "device_2D.lua"
+    text = device.read_text(encoding="utf-8")
+    device.write_text(text[: text.index("folded_back = {")], encoding="utf-8")
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert any(f.code == "panel-missing" and f.panel == "folded_back"
+               for f in report.errors)
+
+
+def test_folded_backdrop_must_be_150_px(project_dir):
+    """Folded panels are a fixed 150 px — RE2DRender will not say so."""
+    link, elements = make_scene(project_dir)
+    folded = next(e for e in elements if e.path == "Panel_Folded_Front")
+    folded.frame_h = 130
+    report = validate_link(link, elements)
+    found = [f for f in report.errors if f.code == "panel-size"]
+    assert found and "150" in found[0].message
+
+
+def test_device_taller_than_nine_units_is_an_error(project_dir):
+    link, elements = make_scene(project_dir)
+    for element in elements:
+        if element.path in ("Panel_Front", "Panel_Back"):
+            element.frame_h = 345 * 10
+    report = validate_link(link, elements)
+    assert any(f.code == "rack-height" and "9U" in f.message for f in report.errors)
+
+
+def test_interactive_widget_in_the_edge_margin_is_a_warning(project_dir):
+    device = project_dir / "GUI2D" / "device_2D.lua"
+    device.write_text(
+        device.read_text(encoding="utf-8").replace(
+            "offset = { 1810, 145 }", "offset = { 10, 145 }"
+        ),
+        encoding="utf-8",
+    )
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert any(f.code == "edge-margin" and f.subject == "Button_50x35_2frames"
+               for f in report.warnings)
+
+
+def test_static_decoration_may_overlap_other_widgets(project_dir):
+    """The spec exempts static_decoration from the no-overlap rule."""
+    device = project_dir / "GUI2D" / "device_2D.lua"
+    device.write_text(
+        device.read_text(encoding="utf-8").replace(
+            "offset = { 2600, 100 }", "offset = { 950, 120 }"  # onto the knob
+        ),
+        encoding="utf-8",
+    )
+    link, elements = make_scene(project_dir)
+    report = validate_link(link, elements)
+    assert not [f for f in report.warnings if f.code == "overlap"]

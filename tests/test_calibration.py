@@ -8,9 +8,11 @@ from reblend.model import calibration as cal
 def test_panel_sizes():
     assert cal.panel_size_px("front", rack_units=2) == cal.PanelSize(3770, 690)
     assert cal.panel_size_px("back", rack_units=1) == cal.PanelSize(3770, 345)
-    # folded panels are 130 px regardless of rack height (M0 finding 7)
-    assert cal.panel_size_px("folded_front", rack_units=3) == cal.PanelSize(3770, 130)
-    assert cal.panel_size_px("folded_back") == cal.PanelSize(3770, 130)
+    # Folded panels are a fixed 150 px regardless of rack height — a stated
+    # requirement of the GUI design guidelines, not something RE2DRender
+    # enforces (it echoes back whatever backdrop size it is handed).
+    assert cal.panel_size_px("folded_front", rack_units=3) == cal.PanelSize(3770, 150)
+    assert cal.panel_size_px("folded_back") == cal.PanelSize(3770, 150)
 
 
 def test_bad_rack_units_raise():

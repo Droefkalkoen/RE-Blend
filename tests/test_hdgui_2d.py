@@ -39,7 +39,7 @@ def test_unknown_attributes_preserved(hdgui):
     assert deco.attrs["blend_mode"] == "luminance"
     # jbox.ui_text("...") is a non-table constructor call; the recorder keeps
     # both the constructor name and its argument.
-    assert deco.attrs["ui_name"] == {"__jbox": "ui_text", "value": "signal lamp"}
+    assert deco.attrs["ui_name"] == {"__jbox": "ui_text", "value": "logo plate"}
 
 
 def test_widget_without_value_binding(hdgui):
@@ -49,7 +49,19 @@ def test_widget_without_value_binding(hdgui):
 
 
 def test_panel_level_attrs_preserved(hdgui):
-    assert hdgui.panels["back"].attrs["cable_origin"] == {"node": "CableOrigin"}
+    assert hdgui.panels["folded_back"].attrs["cable_origin"] == {"node": "CableOrigin"}
+    assert "cable_origin" not in hdgui.panels["back"].attrs
+
+
+def test_main_node_spelling_is_accepted(hdgui):
+    """static_decoration and custom_display name their node `main_node`.
+
+    Reading only `graphics.node` would silently detach them from the node.
+    """
+    deco, = [w for w in hdgui.panels["front"].widgets if w.kind == "static_decoration"]
+    assert deco.attrs["graphics"] == {"main_node": "logo_plate"}
+    assert deco.node == "logo_plate"
+    assert [w.kind for w in hdgui.widgets_for_node("logo_plate")] == ["static_decoration"]
 
 
 def test_widgets_for_node_across_panels(hdgui):

@@ -15,11 +15,15 @@ Implementation has started with the Blender-independent layers. Repository conte
 - `reblend/` — the extension package (import name `reblend`; distribution/repo name `re-blend`).
   The M1 (MVP) and M2 (sync) code is in place across the planned module layout: `project/`
   (sandboxed Lua reading, patch-mode Lua writer + re-import merge, motherboard steps, PNG
-  metadata, project link/import, validation engine), `model/` (versioned RE Element schema +
+  metadata, project link/import, SDK stock parts, validation engine), `model/` (versioned RE Element schema +
   migrations, kinds, state tables, calibration, rigs), `render/` (stitcher, panel compositor +
   contact sheet, output validators, Blender I/O, batch renderer), `ui/` (N-panel, operators). Only
   `model/rigs.py`, `render/bpy_io.py`, `render/renderer.py`, and `ui/*` import `bpy` (lazily
   via `reblend.register()`); everything else is pure Python under test.
+- `docs/sdk-gui-reference.md` — RE-Blend's transcription of the SDK 4.6.0 GUI documents
+  (designer manual, design guidelines, scripting specification): panel geometry, the per-widget
+  frame-count contract, the parts whose appearance Reason fixes, and RE2DRender's arguments.
+  Read it before any work on the widget model, panel geometry or validation.
 - `tests/` — pytest suite with SDK-convention fixtures under `tests/fixtures/`.
 - `reblend/blender_manifest.toml` — Blender 4.2 LTS+ extension manifest; it lives *inside*
   the package beside `reblend/__init__.py` because Blender's extension system requires the
@@ -27,7 +31,9 @@ Implementation has started with the Blender-independent layers. Repository conte
   `blender --command extension build --source-dir reblend`). `pyproject.toml` is dev tooling
   only (RE-Blend is never pip-installed into Blender). See `docs/install.md`.
 - `SDK_v4.6.0/` — a local, read-only copy of the Reason Rack Extension (Jukebox) SDK,
-  kept on disk as reference material (the example devices are *not* included). RE-Blend
+  kept on disk as reference material (the example devices are *not* included). If your copy
+  has `API/*.html`, those are the authoritative GUI documents — consult them directly and
+  record findings in `docs/sdk-gui-reference.md`; never commit the HTML. RE-Blend
   reads/writes the *user's* RE project files; it does not bundle or link this SDK. Do not
   treat SDK files as something to modify. **This directory is git-ignored**: the SDK is
   Reason Studios' "All rights reserved" material and its license forbids pairing it with
@@ -64,8 +70,17 @@ construction rather than caught after the fact.
 
 ## Domain invariants (get these wrong and the output silently breaks)
 
-These come from the SDK's observed behaviour and the example devices — there is *no formal GUI
-authoring manual* (design §12). Preserve them in any code you write:
+These are **documented** SDK requirements, not folklore: SDK 4.6.0 ships a GUI designer manual,
+GUI design guidelines and a scripting specification covering all 25 widget types.
+**`docs/sdk-gui-reference.md` is RE-Blend's transcription of them and the first thing to read
+before touching the widget model, panel geometry or validation** — the SDK HTML itself is
+Reason Studios' "all rights reserved" material and is never committed here.
+
+The catch, and the reason RE-Blend exists: **RE2DRender enforces almost none of it.** It compiles
+art that submission review will reject, and it echoes back whatever panel size it is handed. Never
+treat "RE2DRender accepted it" as evidence that a requirement is satisfied — that mistake is how
+the folded-panel height sat wrong in this codebase for a milestone. Preserve these in any code you
+write:
 
 - **Sprite sheets are vertical strips**, frame 0 on top, strip height = `frameHeight × frameCount`.
 - **8-bit PNG, straight (un-premultiplied) alpha.** Blender composites premultiplied internally;
@@ -75,11 +90,25 @@ authoring manual* (design §12). Preserve them in any code you write:
   wobbles in Reason. RE-Blend's design guarantees this by deriving a fixed per-element camera from
   a "registration empty" that never moves between frames (design §4.2).
 - **Frame-count contract**: the frame count baked into the art must equal `frames` in
-  `GUI2D/device_2D.lua` (and agree with `steps` in `motherboard_def.lua` for stepped properties).
-  RE-Blend generates the sheet *from* `re_frames`, so art/Lua/rig cannot diverge.
+  `GUI2D/device_2D.lua`. RE-Blend generates the sheet *from* `re_frames`, so art/Lua/rig cannot
+  diverge. Per-widget counts are fixed by the spec and mostly **independent of the bound
+  property**: `toggle_button` 2 or 4, `momentary_button`/`step_button`/`radio_button` exactly 2,
+  `up_down_button` exactly 3, `static_decoration` and `custom_display` exactly 1. Only
+  `sequence_fader` tracks `steps` (one frame per handle position). `step_button` and
+  `radio_button` are **not** selectors — a radio group over N values is N two-frame widgets, one
+  per `index`. The table lives in `kinds.WIDGET_FRAME_RULES`.
+- **Panel geometry**: 3770 px wide (all panels, Players included), 1U = 345 px, **max 9U**,
+  folded panels exactly **150 px**. 25 px interaction-free margin at the left and right edges.
+- **Some art is not ours to make**: sockets, the device-name tape, the back-panel placeholder,
+  CV trim knobs and the patch/sample browse groups have a fixed appearance and come from the
+  user's SDK (`project/sdk_parts.py`, *Install SDK Parts*). `value_display`, `popup_button`,
+  `patch_name` and `sample_drop_zone` are bounds-only — Reason never draws the authored pixels.
+  `kinds.renders_art()` gates the render queue on this.
 - **Colour management pinned to Standard** view transform (not Filmic/AgX) so palette hex values
   survive to the file.
-- **Never generate the 0.5× asset set** — that is RE2DRender's job (design §5.2, §9).
+- **Never generate the 0.5× asset set** — that is RE2DRender's job (design §5.2, §9). Note the
+  inverse trap: run without `hi-res`/`hi-res-only` and RE2DRender produces *only* the legacy
+  lo-res set, which Reason/Recon 12+ do not use.
 - **The three-file RE contract** stays the RE project's responsibility: `motherboard_def.lua`
   property → bound by an `hdgui_2D.lua` widget → naming a node in `device_2D.lua` → naming a PNG.
   RE-Blend reads all three, validates against them, and writes only the placement layer.
@@ -100,7 +129,7 @@ and stitching them into a strip.
 Planned module layout:
 
 - `project/` — project link, Lua reading (sandboxed interpreter + `jbox` stubs), Lua patch-writer,
-  palette loader, manifest.
+  SDK stock-part resolution, palette loader, manifest.
 - `model/` — RE Element schema, state tables, rig generators (knob driver, state keyframes),
   calibration.
 - `render/` — render queue, per-element scene push/pop, strip stitcher (numpy over `bpy` image
@@ -145,7 +174,10 @@ product, not an opaque binary drop.
   before anything is built on top), and **nothing writes to a Lua file until round-tripping is
   proven** — read-only first, patch mode only with interop fixtures in place, layout editing
   only after patch mode has an M2 track record.
-- When a domain assumption is uncertain, the ground truth is **what RE2DRender accepts and what
-  RE2DPreview/Recon display** — verify empirically and capture the finding in RE-Blend's own docs
-  (they become the reference the SDK lacks).
+- When a domain assumption is uncertain, check `docs/sdk-gui-reference.md` and the SDK documents
+  it cites **first**. Only where they are silent — the multiple-of-5 frame bounds, the `-reframed`
+  copy, alpha handling end to end — is the ground truth **what RE2DRender accepts and what
+  RE2DPreview/Recon display**; verify those empirically and capture the finding in RE-Blend's own
+  docs. Keep the two kinds of claim distinguishable: a spec requirement and an observed tool
+  behaviour are not interchangeable evidence.
 - SDK tool *paths* are per-machine settings, never committed to the repo.
