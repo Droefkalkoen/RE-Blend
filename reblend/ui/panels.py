@@ -104,7 +104,9 @@ class REBLEND_PT_active(bpy.types.Panel):
         row.prop(active, '["re_frame_h"]', text="Frame H")
         if data.has_frame_size:
             layout.operator("reblend.scale_to_bounds", icon="FULLSCREEN_EXIT")
-        layout.operator("reblend.generate_rig", icon="DRIVER")
+        row = layout.row(align=True)
+        row.operator("reblend.generate_rig", icon="DRIVER")
+        row.operator("reblend.generate_all_rigs", text="All", icon="OUTLINER")
 
 
 class REBLEND_PT_state_table(bpy.types.Panel):
@@ -139,7 +141,10 @@ class REBLEND_PT_state_table(bpy.types.Panel):
             layout.label(text="re_states JSON is corrupt", icon="ERROR")
             return
 
-        layout.operator("reblend.add_state_action", icon="ADD")
+        header = layout.row(align=True)
+        header.operator("reblend.add_state_action", icon="ADD")
+        header.operator("reblend.reverse_states", text="", icon="ARROW_LEFTRIGHT")
+        header.operator("reblend.repair_state_channels", text="", icon="TOOL_SETTINGS")
         if table.frames != data.frames:
             layout.label(
                 text=f"{table.frames} states vs re_frames {data.frames}",
@@ -153,23 +158,37 @@ class REBLEND_PT_state_table(bpy.types.Panel):
         box = layout.box()
         box.label(text="Actions", icon="ANIM")
         for index, channels in enumerate(controls):
+            channel = channels[0]
             row = box.row(align=True)
-            row.label(text=state_tables.describe_channel(channels[0]))
+            row.label(text=state_tables.describe_channel(channel))
+            if state_tables.id_property_of(channel[2]) is not None:
+                row.operator("reblend.copy_driver_reference",
+                             text="", icon="COPYDOWN").control = index
             # Spreading a flag is meaningless, and with fewer than three states
             # there is no in-between to fill: hide the button rather than offer
             # an action that can only report an error.
-            if state_tables.is_interpolatable(channels[0]) and table.frames > 2:
+            if state_tables.is_interpolatable(channel) and table.frames > 2:
                 row.operator("reblend.spread_state_values",
                              text="", icon="IPO_LINEAR").control = index
             row.operator("reblend.remove_state_action",
                          text="", icon="X").control = index
 
+        uneven = dict(
+            (chan, values) for chan, values in table.uneven_travel_channels()
+        ) if data.kind == kinds.FADER_HANDLE else {}
+        for chan in uneven:
+            layout.label(
+                text=f"{state_tables.describe_channel(chan)}: uneven travel",
+                icon="ERROR")
+
         for state_index, state in enumerate(table.states):
             sbox = layout.box()
-            header = sbox.row(align=True)
-            header.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
-            header.operator("reblend.show_state", text="",
-                            icon="RESTRICT_VIEW_OFF").state = state_index
+            title = sbox.row(align=True)
+            title.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
+            title.operator("reblend.rename_state", text="",
+                           icon="OUTLINER_DATA_FONT").state = state_index
+            title.operator("reblend.show_state", text="",
+                           icon="RESTRICT_VIEW_OFF").state = state_index
             for index, channels in enumerate(controls):
                 channel = channels[0]
                 row = sbox.row(align=True)

@@ -269,3 +269,152 @@ def test_describe_channel_reads_in_designer_terms():
     assert "emission colour" in d(emission_color("led", (0, 0, 0, 1)).key())
     assert d(location("handle", 2, 0.0).key()) == "handle: location Z"
     assert "shape key 'pressed'" in d(shape_key_value("cap", "pressed", 1.0).key())
+
+
+# -- shader sockets: the same channel under different node types -------------
+
+
+def _principled_strength(material="ledemit"):
+    return emission_strength(material, 0.0, node="Principled BSDF",
+                             socket="Emission Strength")
+
+
+def test_emission_actions_take_the_socket_name():
+    action = _principled_strength()
+    assert action.data_path == (
+        'node_tree.nodes["Principled BSDF"].inputs["Emission Strength"]'
+        ".default_value"
+    )
+    colour = emission_color("ledemit", (1, 0, 0, 1), node="Principled BSDF",
+                            socket="Emission Color")
+    assert 'inputs["Emission Color"]' in colour.data_path
+
+
+def test_path_grammar_reads_nodes_sockets_and_id_properties():
+    path = _principled_strength().data_path
+    assert state_tables.node_of(path) == "Principled BSDF"
+    assert state_tables.socket_of(path) == "Emission Strength"
+    assert state_tables.id_property_of(path) is None
+    assert state_tables.id_property_of('["lovely-cucumber"]') == "lovely-cucumber"
+    assert state_tables.socket_of("location") is None
+
+
+def test_value_kind_classifies_by_socket_name_not_by_a_fixed_path():
+    kind = state_tables.value_kind
+    assert kind(("objects", "cap", "hide_render", -1)) == "BOOL"
+    assert kind(emission_color("led", (0, 0, 0, 1)).key()) == "COLOR"
+    assert kind(emission_color("led", (0, 0, 0, 1), node="Principled BSDF",
+                               socket="Emission Color").key()) == "COLOR"
+    assert kind(_principled_strength().key()) == "FLOAT"
+    assert kind(location("handle", 2, 0.0).key()) == "FLOAT"
+
+
+def test_describe_channel_labels_both_shader_conventions_the_same():
+    d = state_tables.describe_channel
+    assert d(emission_strength("led", 0.0).key()) == "led: emission strength"
+    assert d(_principled_strength("led").key()) == "led: emission strength"
+    assert d(emission_color("led", (0, 0, 0, 1), node="Principled BSDF",
+                            socket="Emission Color").key()) == "led: emission colour"
+
+
+# -- driver values: one channel, any property ---------------------------------
+
+
+def test_driver_value_builds_an_id_property_channel():
+    action = state_tables.driver_value("reg_fader", "lovely-cucumber", 0.5)
+    assert action.key() == ("objects", "reg_fader", '["lovely-cucumber"]', -1)
+    assert action.value == 0.5
+    assert state_tables.is_interpolatable(action.key())
+    assert state_tables.value_kind(action.key()) == "FLOAT"
+    assert state_tables.describe_channel(action.key()) == (
+        "reg_fader: value 'lovely-cucumber'"
+    )
+
+
+def test_driver_value_rejects_names_that_would_break_the_path():
+    for bad in ('say "hi"', "back\\slash", "bracket]", ""):
+        with pytest.raises(ValueError):
+            state_tables.driver_value("reg", bad, 0.0)
+
+
+def test_driver_values_spread_like_any_other_quantity():
+    table = StateTable(states=[State(f"state_{i}") for i in range(5)])
+    table.add_actions([state_tables.driver_value("reg", "witty-otter", 0.0)])
+    channel = table.channels()[0]
+    table.spread_channel(channel, 0.0, 1.0)
+    assert [table.value_in(i, channel) for i in range(5)] == [0.0, 0.25, 0.5, 0.75, 1.0]
+
+
+def test_generate_value_name_is_two_words_and_avoids_collisions():
+    import random
+
+    rng = random.Random(1)
+    name = state_tables.generate_value_name(rng=rng)
+    assert name.count("-") == 1 and all(part.isalpha() for part in name.split("-"))
+    taken = {state_tables.generate_value_name(rng=random.Random(i)) for i in range(50)}
+    assert state_tables.generate_value_name(taken, rng=random.Random(3)) not in taken
+
+
+# -- rename, reverse, travel -------------------------------------------------
+
+
+def test_rename_state_keeps_its_actions():
+    table = _fader_table(3)
+    table.rename_state(1, "  11 o'clock  ")
+    assert table.states[1].name == "11 o'clock"
+    assert len(table.states[1].actions) == 1
+    with pytest.raises(ValueError, match="needs a name"):
+        table.rename_state(0, "   ")
+
+
+def test_reverse_mirrors_names_and_values_together():
+    table = _fader_table(3)
+    channel = table.channels()[0]
+    table.spread_channel(channel, 0.0, 0.2)
+    table.rename_state(0, "off")
+    table.rename_state(2, "bypass")
+    table.reverse()
+    assert [s.name for s in table.states] == ["bypass", "state_1", "off"]
+    assert [table.value_in(i, channel) for i in range(3)] == [0.2, 0.1, 0.0]
+    assert len(table.compile()) == 3  # still total
+
+
+def test_retarget_channel_keeps_every_state_value():
+    table = StateTable(states=[State("unlit"), State("lit")])
+    table.add_actions([emission_strength("ledemit", 0.0)])
+    broken = table.channels()[0]
+    table.set_value(1, broken, 1000.0)
+
+    fixed = table.retarget_channel(broken, data_path=_principled_strength().data_path)
+    assert fixed in table.channels() and broken not in table.channels()
+    assert [table.value_in(i, fixed) for i in range(2)] == [0.0, 1000.0]
+    assert len(table.compile()) == 2  # still total
+
+
+def test_retarget_channel_refuses_to_collide_or_invent():
+    table = StateTable(states=[State("unlit"), State("lit")])
+    table.add_actions([emission_strength("led", 0.0)])
+    table.add_actions([_principled_strength("led")])
+    with pytest.raises(ValueError, match="already has"):
+        table.retarget_channel(table.channels()[0],
+                               data_path=_principled_strength("led").data_path)
+    with pytest.raises(KeyError, match="not in the table"):
+        table.retarget_channel(location("ghost", 2, 0.0).key(), target="other")
+
+
+def test_uneven_travel_channels_flags_only_uneven_locations():
+    table = _fader_table(3)
+    channel = table.channels()[0]
+    table.spread_channel(channel, 0.0, 0.2)
+    assert table.uneven_travel_channels() == []
+    table.set_value(1, channel, 0.19)
+    findings = table.uneven_travel_channels()
+    assert len(findings) == 1 and findings[0][0] == channel
+    assert findings[0][1] == [0.0, 0.19, 0.2]
+
+
+def test_uneven_travel_ignores_non_location_channels():
+    table = StateTable(states=[State(f"s{i}") for i in range(3)])
+    table.add_actions([emission_strength("mat", 0.0)])
+    table.set_value(2, table.channels()[0], 9.0)  # 0, 0, 9 — wildly uneven
+    assert table.uneven_travel_channels() == []

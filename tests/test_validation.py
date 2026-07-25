@@ -13,6 +13,7 @@ import zlib
 
 import pytest
 
+from reblend.model import kinds, state_tables
 from reblend.project import validation
 from reblend.project.link import load_project
 from reblend.project.png_meta import write_rgba_png
@@ -49,10 +50,33 @@ def project_dir(silence_detector, tmp_path):
     return root
 
 
+def rigged_states(element):
+    """A minimal *finished* state table for a state-rigged element.
+
+    A named-but-empty table is what import seeds; it is not yet a rig, and the
+    report says so. "Correct project" therefore means the multi-state elements
+    carry actions that actually differ per frame — with, for a fader, the even
+    travel its widget contract requires.
+    """
+    table = state_tables.default_state_table(element.kind, element.frames)
+    if table is None:
+        return ""
+    if element.kind == kinds.FADER_HANDLE:
+        table.add_actions([state_tables.location(f"{element.path}_handle", 2, 0.0)])
+        table.spread_channel(table.channels()[0], 0.0, 0.2)
+    else:
+        table.add_actions([state_tables.emission_strength(f"{element.path}_mat", 0.0)])
+        table.set_value(table.frames - 1, table.channels()[0], 5.0)
+    return table.to_json()
+
+
 def make_scene(root):
     """(link, elements) as the Blender side would hand them to validation."""
     link = load_project(root)
-    return link, [spec.to_element_data() for spec in link.specs]
+    elements = [spec.to_element_data() for spec in link.specs]
+    for element in elements:
+        element.states = rigged_states(element)
+    return link, elements
 
 
 def codes(report):
@@ -85,6 +109,66 @@ def test_orphan_element_is_a_warning(project_dir):
     report = validate_link(link, elements)
     assert "orphan-element" in codes(report)
     assert report.ok  # warning, not error
+
+
+def test_missing_state_table_is_a_warning(project_dir):
+    link, elements = make_scene(project_dir)
+    fader = next(e for e in elements if e.kind == kinds.FADER_HANDLE)
+    fader.states = ""
+    report = validate_link(link, elements)
+    states = [f for f in report.warnings if f.code == "states"]
+    assert len(states) == 1
+    assert "no state table" in states[0].message
+    assert report.ok  # warning, not error
+
+
+def test_state_table_without_actions_is_a_warning(project_dir):
+    link, elements = make_scene(project_dir)
+    fader = next(e for e in elements if e.kind == kinds.FADER_HANDLE)
+    fader.states = state_tables.default_state_table(fader.kind, fader.frames).to_json()
+    report = validate_link(link, elements)
+    assert any(f.code == "states" and "no actions" in f.message
+               for f in report.warnings)
+
+
+def test_state_count_mismatch_is_an_error(project_dir):
+    link, elements = make_scene(project_dir)
+    fader = next(e for e in elements if e.kind == kinds.FADER_HANDLE)
+    table = state_tables.StateTable.from_json(fader.states)
+    table.states = table.states[:-1]
+    fader.states = table.to_json()
+    report = validate_link(link, elements)
+    assert any(f.code == "states" and f.severity == "error" for f in report.findings)
+
+
+def test_uneven_fader_travel_is_a_warning(project_dir):
+    link, elements = make_scene(project_dir)
+    fader = next(e for e in elements if e.kind == kinds.FADER_HANDLE)
+    table = state_tables.StateTable.from_json(fader.states)
+    table.set_value(1, table.channels()[0], 0.19)  # nearly at the top, not mid
+    fader.states = table.to_json()
+    report = validate_link(link, elements)
+    travel = [f for f in report.warnings if f.code == "travel"]
+    assert len(travel) == 1
+    assert "evenly spaced" in travel[0].message
+    assert report.ok
+
+
+def test_uneven_travel_is_only_checked_on_faders(project_dir):
+    link, elements = make_scene(project_dir)
+    lamp = next(e for e in elements if e.kind == kinds.LAMP)
+    table = state_tables.StateTable.from_json(lamp.states)
+    table.add_actions([state_tables.location(f"{lamp.path}_obj", 2, 0.0)])
+    table.set_value(1, table.channels()[-1], 3.7)
+    lamp.states = table.to_json()
+    assert "travel" not in codes(validate_link(link, elements))
+
+
+def test_corrupt_state_table_is_an_error(project_dir):
+    link, elements = make_scene(project_dir)
+    next(e for e in elements if e.kind == kinds.FADER_HANDLE).states = "{not json"
+    report = validate_link(link, elements)
+    assert any(f.code == "states" and f.severity == "error" for f in report.findings)
 
 
 def test_frame_count_mismatch_is_an_error(project_dir):

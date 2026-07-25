@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from ..model import calibration, kinds, schema
+from ..model import calibration, kinds, schema, state_tables
 from ..render.validators import check_frame_bounds
 from . import link as link_mod
 from .lua_reader import PANELS, Device2D, Graphic, HDGui2D, Node2D
@@ -118,6 +118,7 @@ def validate_project(
     _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
     _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
+    _check_state_tables(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
         _check_files(report, elements, gui2d_dir)
@@ -357,6 +358,69 @@ def _check_kinds(
                 "kind",
                 f"element kind is '{element.kind}' but its hdgui_2D widgets imply "
                 f"'{want}' — the rig may not match what Reason does with the sheet",
+                subject=element.path,
+            )
+
+
+def _check_state_tables(report: Report, elements: Sequence[schema.ElementData]) -> None:
+    """Check the rig side of a multi-state element: does it *differ* per frame?
+
+    Frame counts and widget contracts are checked elsewhere; this looks at
+    whether the art those frames will contain is actually distinct, which is
+    the failure the SDK tools cannot see at all. A fader with no state table
+    renders three identical frames and RE2DRender compiles them happily.
+    """
+    for element in elements:
+        if kinds.rig_for_kind(element.kind) != kinds.RIG_STATES:
+            continue
+
+        if not element.states:
+            if element.frames > 1:
+                report.add(
+                    WARNING,
+                    "states",
+                    f"'{element.kind}' element has {element.frames} frames but no "
+                    "state table — every frame would render identically",
+                    subject=element.path,
+                )
+            continue
+
+        try:
+            table = state_tables.StateTable.from_json(element.states)
+        except ValueError as exc:
+            report.add(ERROR, "states", f"state table is unreadable: {exc}",
+                       subject=element.path)
+            continue
+
+        if table.frames != element.frames:
+            report.add(
+                ERROR,
+                "states",
+                f"state table has {table.frames} states but the element declares "
+                f"{element.frames} frames — the rig cannot fill the sheet",
+                subject=element.path,
+            )
+        if not table.channels() and element.frames > 1:
+            report.add(
+                WARNING,
+                "states",
+                "state table names its states but carries no actions — every "
+                "frame would render identically",
+                subject=element.path,
+            )
+
+        # Only a fader's handle is required to travel a constant distance per
+        # frame (SDK scripting specification); other kinds move freely.
+        if element.kind != kinds.FADER_HANDLE:
+            continue
+        for channel, values in table.uneven_travel_channels():
+            spacing = ", ".join(f"{v:.4f}" for v in values)
+            report.add(
+                WARNING,
+                "travel",
+                f"{state_tables.describe_channel(channel)} is not evenly spaced "
+                f"({spacing}) — a sequence_fader's handle must travel the same "
+                "distance between every frame; use Spread Between Extremes",
                 subject=element.path,
             )
 

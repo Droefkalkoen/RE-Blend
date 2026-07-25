@@ -15,6 +15,7 @@ serialise to JSON for storage in the element's ``re_states`` property.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable
 
@@ -31,10 +32,16 @@ __all__ = [
     "emission_color",
     "location",
     "shape_key_value",
+    "driver_value",
     "default_state_table",
     "describe_channel",
     "is_interpolatable",
     "linear_spread",
+    "value_kind",
+    "node_of",
+    "socket_of",
+    "id_property_of",
+    "generate_value_name",
 ]
 
 #: A channel identity: ``(id_type, target, data_path, index)`` — what
@@ -78,17 +85,32 @@ def visibility(obj: str, visible: bool) -> tuple[StateAction, ...]:
     )
 
 
-def emission_strength(material: str, value: float, node: str = "Emission") -> StateAction:
-    """Emission strength on a named node of a material's tree (lamps, glows)."""
-    path = f'node_tree.nodes["{node}"].inputs["Strength"].default_value'
+def emission_strength(
+    material: str, value: float, node: str = "Emission", socket: str = "Strength"
+) -> StateAction:
+    """Emission strength on a named node of a material's tree (lamps, glows).
+
+    ``socket`` is the input's name on that node, because it is not the same on
+    every shader: an *Emission* node calls it ``Strength`` while a *Principled
+    BSDF* calls it ``Emission Strength``. The Blender-side operator resolves it
+    against the real node rather than making the designer know which.
+    """
+    path = f'node_tree.nodes["{node}"].inputs["{socket}"].default_value'
     return StateAction("materials", material, path, float(value))
 
 
 def emission_color(
-    material: str, rgba: tuple[float, float, float, float], node: str = "Emission"
+    material: str,
+    rgba: tuple[float, float, float, float],
+    node: str = "Emission",
+    socket: str = "Color",
 ) -> StateAction:
-    """Emission colour on a named node of a material's tree."""
-    path = f'node_tree.nodes["{node}"].inputs["Color"].default_value'
+    """Emission colour on a named node of a material's tree.
+
+    Same ``socket`` caveat as :func:`emission_strength`: a *Principled BSDF*
+    names it ``Emission Color``.
+    """
+    path = f'node_tree.nodes["{node}"].inputs["{socket}"].default_value'
     return StateAction("materials", material, path, tuple(float(c) for c in rgba))
 
 
@@ -103,14 +125,125 @@ def shape_key_value(obj: str, key_name: str, value: float) -> StateAction:
     return StateAction("objects", obj, path, float(value))
 
 
+def driver_value(obj: str, name: str, value: float) -> StateAction:
+    """A named scalar on an object, for the designer to drive anything with.
+
+    The vocabulary above covers what most controls need, but Blender can
+    animate far more than RE-Blend has action types for: a modifier's factor, a
+    geometry-node input, a constraint's influence, a compositor value. Rather
+    than grow an action type per target — each one a new dialog, a new label, a
+    new way to be wrong — the table drives **one custom property** and the
+    designer points as many drivers at it as they like.
+
+    The property lives on an object (the element's registration empty by
+    convention: it always exists and never moves) and is addressed by an
+    ID-property path, so it keyframes like any other channel. In a driver it is
+    a *Single Property* variable: ID Type ``Object``, ID the owner, Path
+    ``["<name>"]``.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("a driver value needs a name")
+    if any(char in name for char in '"\\[]'):
+        raise ValueError(
+            f"driver value name {name!r} may not contain quotes, backslashes "
+            "or brackets — it becomes part of an RNA path"
+        )
+    return StateAction("objects", obj, f'["{name}"]', float(value))
+
+
+#: Word lists for :func:`generate_value_name`. Adjective-noun pairs read as
+#: names rather than as slots, which matters once a device has a dozen of them
+#: and they all have to be told apart in a driver's variable list.
+_ADJECTIVES = (
+    "amber", "brisk", "calm", "clever", "cosy", "crisp", "dapper", "eager",
+    "fuzzy", "gentle", "glossy", "humble", "jolly", "keen", "lively", "lovely",
+    "mellow", "nimble", "plucky", "quiet", "rapid", "rustic", "sleek", "snug",
+    "spry", "sturdy", "sunny", "tidy", "velvet", "witty",
+)
+_NOUNS = (
+    "acorn", "anchor", "beacon", "bramble", "cedar", "comet", "cucumber",
+    "dahlia", "ember", "falcon", "ferry", "harbour", "juniper", "kettle",
+    "lantern", "meadow", "monsoon", "otter", "pebble", "quartz", "ribbon",
+    "saffron", "sparrow", "thistle", "tundra", "velvet", "walnut", "willow",
+    "zephyr",
+)
+
+
+def generate_value_name(
+    taken: Iterable[str] = (), rng: "random.Random | None" = None
+) -> str:
+    """A memorable ``adjective-noun`` name not already in ``taken``."""
+    rng = rng or random.Random()
+    used = set(taken)
+    candidate = ""
+    for _attempt in range(200):
+        candidate = f"{rng.choice(_ADJECTIVES)}-{rng.choice(_NOUNS)}"
+        if candidate not in used:
+            return candidate
+    suffix = 2
+    while f"{candidate}-{suffix}" in used:
+        suffix += 1
+    return f"{candidate}-{suffix}"
+
+
 #: Data paths whose value is a flag, not a quantity. Interpolating one is
 #: meaningless (there is no half-hidden object), so a linear spread refuses.
 _FLAG_PATHS = ("hide_render", "hide_viewport")
+
+#: Socket names too generic to identify a channel on their own, so the label
+#: keeps the node name in front of them ("emission strength", not "strength").
+_GENERIC_SOCKETS = frozenset({"strength", "color", "colour", "value", "factor"})
 
 
 def is_interpolatable(channel: Channel) -> bool:
     """Whether a channel holds a quantity a linear spread can fill in."""
     return channel[2] not in _FLAG_PATHS
+
+
+# -- data-path grammar ------------------------------------------------------
+#
+# The convenience constructors above are the only writers of these paths, so
+# reading them back is parsing a format this module owns. Everything that needs
+# to know what a channel *is* (labels, editing widgets, the Blender-side value
+# reader) asks here rather than pattern-matching paths of its own.
+
+
+def node_of(data_path: str) -> str | None:
+    """The shader node a node-input path addresses, if it is one."""
+    if 'nodes["' not in data_path:
+        return None
+    return data_path.partition('nodes["')[2].partition('"]')[0]
+
+
+def socket_of(data_path: str) -> str | None:
+    """The input socket a node-input path addresses, if it is one."""
+    if 'inputs["' not in data_path:
+        return None
+    return data_path.partition('inputs["')[2].partition('"]')[0]
+
+
+def id_property_of(data_path: str) -> str | None:
+    """The custom-property name an ID-property path addresses, if it is one."""
+    if data_path.startswith('["') and data_path.endswith('"]'):
+        return data_path[2:-2]
+    return None
+
+
+def value_kind(channel: Channel) -> str:
+    """Which editing widget a channel needs: ``BOOL``, ``COLOR`` or ``FLOAT``.
+
+    Colour is decided by the socket's *name*, not by a fixed path, so a
+    Principled BSDF's ``Emission Color`` classifies the same as an Emission
+    node's ``Color``.
+    """
+    data_path = channel[2]
+    if data_path in _FLAG_PATHS:
+        return "BOOL"
+    socket = socket_of(data_path)
+    if socket and socket.lower().endswith(("color", "colour")):
+        return "COLOR"
+    return "FLOAT"
 
 
 def linear_spread(count: int, start: Any, end: Any) -> list[Any]:
@@ -278,6 +411,51 @@ class StateTable:
             State(state.name, state.actions + actions) for state in self.states
         ]
 
+    def retarget_channel(
+        self,
+        channel: Channel,
+        target: str | None = None,
+        data_path: str | None = None,
+        index: int | None = None,
+    ) -> Channel:
+        """Repoint a channel at a different datablock or path, keeping values.
+
+        For repairing a table whose binding went stale — a renamed object, or a
+        socket name that was right for one shader and wrong for another —
+        without losing the per-state values already dialled in.
+        """
+        if channel not in self.channels():
+            raise KeyError(f"channel not in the table: {describe_channel(channel)}")
+        fields = {}
+        if target is not None:
+            fields["target"] = target
+        if data_path is not None:
+            fields["data_path"] = data_path
+        if index is not None:
+            fields["index"] = index
+        if not fields:
+            return channel
+
+        moved = replace(
+            StateAction(channel[0], channel[1], channel[2], 0.0, channel[3]), **fields
+        ).key()
+        if moved != channel and moved in self.channels():
+            raise ValueError(
+                f"cannot retarget onto a channel the table already has: "
+                f"{describe_channel(moved)}"
+            )
+        self.states = [
+            State(
+                state.name,
+                tuple(
+                    replace(action, **fields) if action.key() == channel else action
+                    for action in state.actions
+                ),
+            )
+            for state in self.states
+        ]
+        return moved
+
     def remove_channel(self, channel: Channel) -> None:
         """Drop a channel from every state (a no-op if it isn't present)."""
         self.states = [
@@ -305,6 +483,52 @@ class StateTable:
                 for a in state.actions
             ),
         )
+
+    def rename_state(self, state_index: int, name: str) -> None:
+        """Rename one state, keeping its actions.
+
+        Default names (``state_0…state_7``) say nothing about what a position
+        means; ``11 o'clock`` or ``bypass`` does.
+        """
+        name = name.strip()
+        if not name:
+            raise ValueError("a state needs a name")
+        state = self.states[state_index]
+        self.states[state_index] = State(name, state.actions)
+
+    def reverse(self) -> None:
+        """Mirror the table end to end, names and values together.
+
+        For when a ``sequence_fader``'s ``inverted`` turns out the other way
+        round: the art is right, the frame order is backwards, and retyping N
+        detents by hand is both tedious and a chance to fat-finger one.
+        """
+        self.states = list(reversed(self.states))
+
+    def uneven_travel_channels(
+        self, tolerance: float = 1e-4
+    ) -> list[tuple[Channel, list[float]]]:
+        """Location channels whose values are not evenly spaced.
+
+        Only ``location`` channels: a ``sequence_fader``'s *handle* must travel
+        a constant distance per frame, but an emission channel on the same
+        element (a bypass lamp that lights in one state only) has no such rule,
+        and flagging it would be noise.
+
+        Returns ``(channel, values)`` pairs so a caller can name the offender.
+        """
+        findings: list[tuple[Channel, list[float]]] = []
+        for channel in self.channels():
+            if channel[2] != "location" or self.frames < 3:
+                continue
+            values = [self.value_in(i, channel) for i in range(self.frames)]
+            if any(v is None or isinstance(v, (tuple, list)) for v in values):
+                continue
+            floats = [float(v) for v in values]
+            steps = [b - a for a, b in zip(floats, floats[1:])]
+            if max(steps) - min(steps) > tolerance:
+                findings.append((channel, floats))
+        return findings
 
     def spread_channel(
         self, channel: Channel, start: Any = None, end: Any = None
@@ -398,12 +622,19 @@ def describe_channel(channel: Channel) -> str:
     in the designer's terms rather than raw RNA paths.
     """
     _id_type, target, data_path, index = channel
-    if data_path in ("hide_render", "hide_viewport"):
+    if data_path in _FLAG_PATHS:
         return f"{target}: visibility"
-    if 'inputs["Strength"]' in data_path:
-        return f"{target}: emission strength"
-    if 'inputs["Color"]' in data_path:
-        return f"{target}: emission colour"
+    socket = socket_of(data_path)
+    if socket is not None:
+        # A bare "Strength" or "Color" says nothing on its own; qualify it with
+        # the node. "Emission Strength" already reads correctly by itself.
+        node = node_of(data_path) or ""
+        label = (f"{node} {socket}" if socket.lower() in _GENERIC_SOCKETS
+                 else socket)
+        return f"{target}: {label.lower().replace('color', 'colour')}"
+    value_name = id_property_of(data_path)
+    if value_name is not None:
+        return f"{target}: value '{value_name}'"
     if data_path == "location":
         return f"{target}: location {'XYZ'[index] if 0 <= index < 3 else index}"
     if "shape_keys" in data_path:

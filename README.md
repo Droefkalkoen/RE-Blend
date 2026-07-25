@@ -102,6 +102,13 @@ currently holds, so a fader detent is placed by moving it in the viewport. **Spr
 Extremes** fills every in-between state by linear interpolation from the first and last: an
 8-position selector needs only its two end positions, and a `sequence_fader`'s travel comes out
 exactly evenly spaced — which the SDK requires of it, and hand-typed detents don't guarantee.
+Validation flags uneven fader travel, state tables that don't match the frame count, and
+multi-frame controls with no rig at all.
+
+For anything the built-in actions don't cover, add a **Driver Value**: a named number
+(`lovely-cucumber`) the states drive, which your own drivers can read as a Single Property
+variable — so a state table can reach a modifier, a geometry-node input or a constraint without
+RE-Blend needing an action type for each.
 
 ### 4. Render and validate
 

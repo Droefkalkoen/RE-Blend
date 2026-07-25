@@ -91,6 +91,9 @@ class ElementData:
     frame_w: int = 0
     frame_h: int = 0
     placements: tuple[Placement, ...] = field(default_factory=tuple)
+    #: The element's ``re_states`` JSON verbatim, so validation can check the
+    #: state table (state count, a fader's even travel) without ``bpy``.
+    states: str = ""
 
     @property
     def panels(self) -> tuple[str, ...]:
@@ -231,4 +234,5 @@ def props_to_data(props: MutableMapping[str, Any]) -> ElementData:
         frame_w=int(working["re_frame_w"]),
         frame_h=int(working["re_frame_h"]),
         placements=tuple(placements),
+        states=str(working.get("re_states", "")),
     )

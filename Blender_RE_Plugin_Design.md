@@ -160,6 +160,16 @@ the designer already thinks ("frame 0 = knob at minimum"):
   between each animation frame must be constant") and which hand-entered detents do not
   guarantee. Values can also be **captured from the scene**, so a detent is placed by
   posing the object in the viewport rather than by typing coordinates.
+- **Driver values**: the action vocabulary above covers what most controls need, but
+  Blender animates far more than RE-Blend has action types for — a modifier factor, a
+  geometry-node input, a constraint influence. Rather than grow an action type per
+  target, a state table can drive one **named custom property** (an `adjective-noun`
+  name, on the element's registration empty by convention) that the designer then points
+  any number of their own drivers at. One channel, arbitrary reach, and no new dialog per
+  property type.
+- Applying a table also **removes keys outside `0…frames−1`** on the channels it owns.
+  Shrinking a frame count otherwise leaves orphan keys that the render never visits but
+  the viewport does, so the preview quietly stops matching the sheet.
 - **Lamps / LEDs**: a two-state specialisation (unlit/lit) driving emission — the
   "lighting of indicators bound to frames" case. The lit state's emission colour can be
   picked from the project palette (§5.7).
