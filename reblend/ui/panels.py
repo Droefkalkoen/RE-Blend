@@ -155,18 +155,31 @@ class REBLEND_PT_state_table(bpy.types.Panel):
         for index, channels in enumerate(controls):
             row = box.row(align=True)
             row.label(text=state_tables.describe_channel(channels[0]))
+            # Spreading a flag is meaningless, and with fewer than three states
+            # there is no in-between to fill: hide the button rather than offer
+            # an action that can only report an error.
+            if state_tables.is_interpolatable(channels[0]) and table.frames > 2:
+                row.operator("reblend.spread_state_values",
+                             text="", icon="IPO_LINEAR").control = index
             row.operator("reblend.remove_state_action",
                          text="", icon="X").control = index
 
         for state_index, state in enumerate(table.states):
             sbox = layout.box()
-            sbox.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
+            header = sbox.row(align=True)
+            header.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
+            header.operator("reblend.show_state", text="",
+                            icon="RESTRICT_VIEW_OFF").state = state_index
             for index, channels in enumerate(controls):
                 channel = channels[0]
                 row = sbox.row(align=True)
                 row.label(text=_short_channel(channel))
                 row.label(text=_format_value(channel,
                                              table.value_in(state_index, channel)))
+                grab = row.operator("reblend.capture_state_value",
+                                    text="", icon="EYEDROPPER")
+                grab.state = state_index
+                grab.control = index
                 op = row.operator("reblend.set_state_value",
                                   text="", icon="GREASEPENCIL")
                 op.state = state_index

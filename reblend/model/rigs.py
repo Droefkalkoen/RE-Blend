@@ -23,7 +23,12 @@ import bpy
 
 from . import calibration, state_tables
 
-__all__ = ["ensure_turntable_driver", "clear_turntable_driver", "apply_state_table"]
+__all__ = [
+    "ensure_turntable_driver",
+    "clear_turntable_driver",
+    "apply_state_table",
+    "read_channel_value",
+]
 
 
 def ensure_turntable_driver(
@@ -83,6 +88,29 @@ def apply_state_table(table: state_tables.StateTable) -> None:
         block = _resolve_block(id_type, target)
         block, data_path = _hop_embedded(block, data_path)
         _make_constant(block, data_path)
+
+
+def read_channel_value(channel: state_tables.Channel):
+    """The value a state-table channel currently holds in the scene (§4.3).
+
+    The inverse of :func:`_set_value`, so a designer can pose the object in the
+    viewport and capture that pose into a state instead of typing coordinates.
+    Raises the same :class:`KeyError` as applying a table when the datablock or
+    path is gone, so a stale channel reports the same way in both directions.
+    """
+    id_type, target, data_path, index = channel
+    block = _resolve_block(id_type, target)
+    block, data_path = _hop_embedded(block, data_path)
+    owner, _, attr = _rna_split(block, data_path)
+    try:
+        current = getattr(owner, attr)
+    except AttributeError as exc:
+        raise KeyError(f"'{target}' has no property '{data_path}'") from exc
+    if hasattr(current, "__len__") and not isinstance(current, str):
+        if index >= 0:
+            return float(current[index])
+        return tuple(float(component) for component in current)
+    return float(current)
 
 
 def _resolve_block(id_type: str, target: str):

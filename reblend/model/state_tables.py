@@ -33,6 +33,8 @@ __all__ = [
     "shape_key_value",
     "default_state_table",
     "describe_channel",
+    "is_interpolatable",
+    "linear_spread",
 ]
 
 #: A channel identity: ``(id_type, target, data_path, index)`` — what
@@ -99,6 +101,48 @@ def shape_key_value(obj: str, key_name: str, value: float) -> StateAction:
     """A shape key's value on a mesh object (pressed caps, flexing parts)."""
     path = f'data.shape_keys.key_blocks["{key_name}"].value'
     return StateAction("objects", obj, path, float(value))
+
+
+#: Data paths whose value is a flag, not a quantity. Interpolating one is
+#: meaningless (there is no half-hidden object), so a linear spread refuses.
+_FLAG_PATHS = ("hide_render", "hide_viewport")
+
+
+def is_interpolatable(channel: Channel) -> bool:
+    """Whether a channel holds a quantity a linear spread can fill in."""
+    return channel[2] not in _FLAG_PATHS
+
+
+def linear_spread(count: int, start: Any, end: Any) -> list[Any]:
+    """``count`` evenly spaced values from ``start`` to ``end``, inclusive.
+
+    Scalars interpolate directly; sequences (an RGBA colour) interpolate
+    component-wise and come back as tuples. The endpoints are copied through
+    exactly rather than computed, so a spread always *ends* where the designer
+    put it — no float drift on the two values they actually chose.
+    """
+    if count < 2:
+        raise ValueError(f"a spread needs at least 2 states, got {count}")
+    if isinstance(start, (tuple, list)) or isinstance(end, (tuple, list)):
+        if not (isinstance(start, (tuple, list)) and isinstance(end, (tuple, list))):
+            raise ValueError("spread endpoints must both be scalars or both vectors")
+        if len(start) != len(end):
+            raise ValueError(
+                f"spread endpoints differ in length: {len(start)} vs {len(end)}"
+            )
+        return [
+            tuple(_lerp(a, b, i, count) for a, b in zip(start, end))
+            for i in range(count)
+        ]
+    return [_lerp(start, end, i, count) for i in range(count)]
+
+
+def _lerp(start: float, end: float, index: int, count: int) -> float:
+    if index == 0:
+        return float(start)
+    if index == count - 1:
+        return float(end)
+    return float(start) + (float(end) - float(start)) * index / (count - 1)
 
 
 @dataclass(frozen=True)
@@ -261,6 +305,43 @@ class StateTable:
                 for a in state.actions
             ),
         )
+
+    def spread_channel(
+        self, channel: Channel, start: Any = None, end: Any = None
+    ) -> list[Any]:
+        """Fill every state's value for one channel by linear interpolation.
+
+        The designer sets the two extremes — an 8-position selector's first and
+        last handle position — and RE-Blend computes what lies between.
+        ``start``/``end`` default to the values the first and last states
+        already hold, so "place both ends, then spread" needs no retyping.
+
+        This is how a ``sequence_fader``'s travel is made *exactly* evenly
+        spaced, which the scripting specification requires of it ("the amount
+        the handle travels between each animation frame must be constant") and
+        which typing detent positions by hand does not guarantee.
+        """
+        if not is_interpolatable(channel):
+            raise ValueError(
+                f"{describe_channel(channel)} is a flag, not a quantity — "
+                "there is nothing to interpolate between its states"
+            )
+        if channel not in self.channels():
+            raise KeyError(f"channel not in the table: {describe_channel(channel)}")
+        if self.frames < 2:
+            raise ValueError(f"a spread needs at least 2 states, got {self.frames}")
+
+        first = self.value_in(0, channel) if start is None else start
+        last = self.value_in(self.frames - 1, channel) if end is None else end
+        if first is None or last is None:
+            raise ValueError(
+                f"{describe_channel(channel)} has no value at one end to spread from"
+            )
+
+        values = linear_spread(self.frames, first, last)
+        for index, value in enumerate(values):
+            self.set_value(index, channel, value)
+        return values
 
     def value_in(self, state_index: int, channel: Channel) -> Any:
         """The value a given state assigns to a channel (``None`` if unset)."""

@@ -151,7 +151,15 @@ the designer already thinks ("frame 0 = knob at minimum"):
   down, lamp dark), frame 1 = *On* (handle mid, lamp lit), frame 2 = *Bypass* (handle
   up, alternate lamp colour). RE-Blend compiles the state table into keyframes with
   **constant** interpolation so scrubbing the timeline previews exactly the discrete
-  sheet.
+  sheet. Numeric channels (transforms, emission strength, emission colour, shape keys)
+  additionally support a **linear spread**: the designer sets only the two extreme
+  states and RE-Blend fills the in-between ones by interpolation. An 8-position selector
+  therefore needs two positions typed rather than eight, and — the reason it is not
+  merely a convenience — a `sequence_fader`'s travel comes out *exactly* evenly spaced,
+  which the scripting specification requires of it ("the amount the handle travels
+  between each animation frame must be constant") and which hand-entered detents do not
+  guarantee. Values can also be **captured from the scene**, so a detent is placed by
+  posing the object in the viewport rather than by typing coordinates.
 - **Lamps / LEDs**: a two-state specialisation (unlit/lit) driving emission — the
   "lighting of indicators bound to frames" case. The lit state's emission colour can be
   picked from the project palette (§5.7).

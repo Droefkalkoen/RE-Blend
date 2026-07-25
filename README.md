@@ -97,6 +97,12 @@ selectors, and lamps, build the **State Table**: add actions (visibility, emissi
 colour, a location axis, a shape key), set each state's value, and Generate Rig compiles them to
 constant-interpolation keyframes — scrubbing the timeline previews exactly the discrete sheet.
 
+Values don't have to be typed. **Capture From Scene** (eyedropper) stores whatever the object
+currently holds, so a fader detent is placed by moving it in the viewport. **Spread Between
+Extremes** fills every in-between state by linear interpolation from the first and last: an
+8-position selector needs only its two end positions, and a `sequence_fader`'s travel comes out
+exactly evenly spaced — which the SDK requires of it, and hand-typed detents don't guarantee.
+
 ### 4. Render and validate
 
 **Render All** (or **Render Active**) isolates each element, renders frames 0…N−1 through a

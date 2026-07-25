@@ -175,6 +175,93 @@ def test_controls_collapse_the_visibility_pair():
     assert len(controls[1]) == 1
 
 
+# -- linear spread between the extremes --------------------------------------
+
+
+def _fader_table(frames: int = 8):
+    """A selector/fader table with one location channel on every state."""
+    table = StateTable(states=[State(f"state_{i}") for i in range(frames)])
+    table.add_actions([location("handle", 2, 0.0)])
+    return table
+
+
+def test_linear_spread_is_evenly_spaced_with_exact_endpoints():
+    values = state_tables.linear_spread(5, 0.0, 1.0)
+    assert values == [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Endpoints are copied, not computed, so they never drift.
+    edges = state_tables.linear_spread(3, 0.1, 0.7)
+    assert edges[0] == 0.1 and edges[-1] == 0.7
+    assert edges[1] == pytest.approx(0.4)
+
+
+def test_linear_spread_handles_descending_and_negative_travel():
+    assert state_tables.linear_spread(3, 0.2, -0.2) == [0.2, 0.0, -0.2]
+
+
+def test_linear_spread_interpolates_colours_component_wise():
+    values = state_tables.linear_spread(3, (0.0, 0.0, 0.0, 1.0), (1.0, 0.5, 0.0, 1.0))
+    assert values[1] == pytest.approx((0.5, 0.25, 0.0, 1.0))
+    assert all(isinstance(v, tuple) for v in values)
+
+
+def test_linear_spread_rejects_bad_input():
+    with pytest.raises(ValueError, match="at least 2 states"):
+        state_tables.linear_spread(1, 0.0, 1.0)
+    with pytest.raises(ValueError, match="both be scalars or both vectors"):
+        state_tables.linear_spread(3, 0.0, (1.0, 1.0, 1.0, 1.0))
+    with pytest.raises(ValueError, match="differ in length"):
+        state_tables.linear_spread(3, (0.0, 0.0), (1.0, 1.0, 1.0))
+
+
+def test_spread_channel_fills_an_eight_way_selector():
+    table = _fader_table(8)
+    channel = table.channels()[0]
+    table.spread_channel(channel, 0.0, 0.7)
+    values = [table.value_in(i, channel) for i in range(8)]
+    assert values[0] == 0.0 and values[-1] == 0.7
+    steps = [b - a for a, b in zip(values, values[1:])]
+    # The spec's requirement for a sequence_fader: constant travel per frame.
+    assert all(step == pytest.approx(steps[0]) for step in steps)
+    # The table stays total and compiles to one key per state.
+    assert len(table.compile()) == 8
+
+
+def test_spread_channel_defaults_to_the_existing_extremes():
+    table = _fader_table(3)
+    channel = table.channels()[0]
+    table.set_value(0, channel, -0.1)
+    table.set_value(2, channel, 0.1)
+    table.spread_channel(channel)
+    assert table.value_in(1, channel) == pytest.approx(0.0)
+
+
+def test_spread_channel_refuses_flags_and_unknown_channels():
+    table = _named_only()
+    table.add_actions(visibility("halo", True))
+    hide = table.channels()[0]
+    assert not state_tables.is_interpolatable(hide)
+    with pytest.raises(ValueError, match="flag, not a quantity"):
+        table.spread_channel(hide, 0.0, 1.0)
+    with pytest.raises(KeyError, match="not in the table"):
+        table.spread_channel(location("nope", 2, 0.0).key(), 0.0, 1.0)
+
+
+def test_spread_channel_needs_two_states():
+    table = StateTable(states=[State("only")])
+    table.add_actions([location("handle", 2, 0.0)])
+    with pytest.raises(ValueError, match="at least 2 states"):
+        table.spread_channel(table.channels()[0], 0.0, 1.0)
+
+
+def test_is_interpolatable_covers_the_action_vocabulary():
+    assert state_tables.is_interpolatable(location("handle", 2, 0.0).key())
+    assert state_tables.is_interpolatable(emission_strength("led", 0.0).key())
+    assert state_tables.is_interpolatable(emission_color("led", (0, 0, 0, 1)).key())
+    assert state_tables.is_interpolatable(shape_key_value("cap", "press", 0.0).key())
+    assert not any(state_tables.is_interpolatable(a.key())
+                   for a in visibility("halo", True))
+
+
 def test_describe_channel_reads_in_designer_terms():
     d = state_tables.describe_channel
     assert d(("objects", "cap", "hide_render", -1)) == "cap: visibility"

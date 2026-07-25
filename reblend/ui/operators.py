@@ -678,6 +678,25 @@ def _value_kind(channel) -> str:
     return "FLOAT"
 
 
+def _seed_state_target(operator, context) -> None:
+    """Fill the Add State Action dialog's target from the selection.
+
+    Location/visibility/shape-key actions target an object, emission actions a
+    material, so the useful default flips with the chosen action — hence an
+    update callback rather than a one-shot seed in ``invoke``. Typing over it
+    always wins; only changing the action type reseeds.
+    """
+    obj = getattr(context, "active_object", None)
+    if operator.action in {"EMISSION_STRENGTH", "EMISSION_COLOR"}:
+        material = obj.active_material if obj is not None else None
+        operator.target = material.name if material is not None else ""
+        return
+    operator.target = obj.name if obj is not None else ""
+    if operator.action == "SHAPE_KEY" and obj is not None:
+        shape_key = obj.active_shape_key
+        operator.key_name = shape_key.name if shape_key is not None else ""
+
+
 class REBLEND_OT_add_state_action(bpy.types.Operator):
     """Add a state action to every state of the active element (§4.3).
 
@@ -703,6 +722,7 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
             ("SHAPE_KEY", "Shape Key", "A shape key's value on a mesh (pressed caps)"),
         ),
         default="VISIBILITY",
+        update=_seed_state_target,
     )
     target: bpy.props.StringProperty(
         name="Target", description="Object name (visibility/location/shape key) or "
@@ -716,6 +736,7 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
     key_name: bpy.props.StringProperty(name="Shape Key", description="Shape key name")
 
     def invoke(self, context, event):
+        _seed_state_target(self, context)
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
@@ -883,6 +904,174 @@ class REBLEND_OT_set_state_value(bpy.types.Operator):
         if kind == "COLOR":
             return tuple(self.color_value)
         return float(self.float_value)
+
+
+class REBLEND_OT_spread_state_values(bpy.types.Operator):
+    """Fill a control's in-between states by linear interpolation (§4.3).
+
+    Set the two extremes and let RE-Blend compute the rest: an 8-position
+    selector needs only its first and last handle position. For a
+    ``sequence_fader`` this is the only way to *guarantee* the spec's constant
+    travel between frames — typed-by-hand detents drift.
+    """
+
+    bl_idname = "reblend.spread_state_values"
+    bl_label = "Spread Between Extremes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    control: bpy.props.IntProperty(default=-1)
+    value_kind: bpy.props.StringProperty(default="FLOAT")
+    first_value: bpy.props.FloatProperty(name="First State")
+    last_value: bpy.props.FloatProperty(name="Last State")
+    first_color: bpy.props.FloatVectorProperty(
+        name="First State", size=4, subtype="COLOR", min=0.0, max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0))
+    last_color: bpy.props.FloatVectorProperty(
+        name="Last State", size=4, subtype="COLOR", min=0.0, max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0))
+
+    def invoke(self, context, event):
+        _collection, table, channel = self._resolve(context)
+        if channel is None:
+            return {"CANCELLED"}
+        self.value_kind = _value_kind(channel)
+        first = table.value_in(0, channel)
+        last = table.value_in(table.frames - 1, channel)
+        if self.value_kind == "COLOR":
+            self.first_color = tuple(first) if first else (0.0, 0.0, 0.0, 1.0)
+            self.last_color = tuple(last) if last else (1.0, 1.0, 1.0, 1.0)
+        else:
+            self.first_value = float(first) if first is not None else 0.0
+            self.last_value = float(last) if last is not None else 0.0
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        col = self.layout.column()
+        if self.value_kind == "COLOR":
+            col.prop(self, "first_color")
+            col.prop(self, "last_color")
+        else:
+            col.prop(self, "first_value")
+            col.prop(self, "last_value")
+
+    def execute(self, context):
+        collection, table, channel = self._resolve(context)
+        if channel is None:
+            return {"CANCELLED"}
+        if self.value_kind == "COLOR":
+            start, end = tuple(self.first_color), tuple(self.last_color)
+        else:
+            start, end = float(self.first_value), float(self.last_value)
+        try:
+            values = table.spread_channel(channel, start, end)
+        except (ValueError, KeyError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        collection["re_states"] = table.to_json()
+        self.report(
+            {"INFO"},
+            f"spread {state_tables.describe_channel(channel)} over "
+            f"{len(values)} states",
+        )
+        return {"FINISHED"}
+
+    def _resolve(self, context):
+        """The element, its table and the addressed channel — or three Nones."""
+        blank = (None, None, None)
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return blank
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return blank
+        controls = table.controls()
+        if not 0 <= self.control < len(controls):
+            self.report({"ERROR"}, "no such state action")
+            return blank
+        channel = controls[self.control][0]
+        if not state_tables.is_interpolatable(channel):
+            self.report(
+                {"ERROR"},
+                f"{state_tables.describe_channel(channel)} is a flag, not a "
+                "quantity — nothing to interpolate",
+            )
+            return blank
+        if table.frames < 2:
+            self.report({"ERROR"}, "a spread needs at least 2 states")
+            return blank
+        return collection, table, channel
+
+
+class REBLEND_OT_capture_state_value(bpy.types.Operator):
+    """Capture one state's value for one control from the live scene (§4.3).
+
+    Pose the handle where the detent belongs, press this, and the state stores
+    where it actually is — the counterpart to typing a number into Set Value.
+    """
+
+    bl_idname = "reblend.capture_state_value"
+    bl_label = "Capture From Scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    state: bpy.props.IntProperty(default=-1)
+    control: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        controls = table.controls()
+        if not (0 <= self.state < table.frames and 0 <= self.control < len(controls)):
+            self.report({"ERROR"}, "no such state value")
+            return {"CANCELLED"}
+        channels = controls[self.control]
+        try:
+            value = rigs.read_channel_value(channels[0])
+        except KeyError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        for channel in channels:
+            table.set_value(self.state, channel, value)
+        collection["re_states"] = table.to_json()
+        self.report(
+            {"INFO"},
+            f"captured {state_tables.describe_channel(channels[0])} into "
+            f"'{table.states[self.state].name}'",
+        )
+        return {"FINISHED"}
+
+
+class REBLEND_OT_show_state(bpy.types.Operator):
+    """Jump the scene to the frame a state occupies (§4.3).
+
+    Sprite frame N *is* scene frame N, so previewing a state is just setting
+    the frame — but only once the rig has been generated, hence the hint.
+    """
+
+    bl_idname = "reblend.show_state"
+    bl_label = "Show State"
+    bl_options = {"REGISTER", "UNDO"}
+
+    state: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        if not 0 <= self.state < data.frames:
+            self.report({"ERROR"}, "no such state")
+            return {"CANCELLED"}
+        context.scene.frame_set(self.state)
+        if "re_preview_frame" in collection:
+            collection["re_preview_frame"] = self.state
+        return {"FINISHED"}
 
 
 # ---------------------------------------------------------------------------
@@ -1464,6 +1653,9 @@ CLASSES = (
     REBLEND_OT_add_state_action,
     REBLEND_OT_remove_state_action,
     REBLEND_OT_set_state_value,
+    REBLEND_OT_spread_state_values,
+    REBLEND_OT_capture_state_value,
+    REBLEND_OT_show_state,
     REBLEND_OT_export_patch,
     REBLEND_OT_sync_project,
     REBLEND_OT_apply_sync,
