@@ -345,6 +345,14 @@ Re-running Import on a linked scene performs a **sync**: new nodes appear as new
 placeholder elements, removed nodes are flagged (not auto-deleted), and changed
 offsets/frames/sizes are listed with per-item *accept theirs / keep mine* resolution.
 
+An element's registration empty **is** its position, so dragging one is a layout edit
+that lives only in the scene until an export writes it out. That drift is first-class:
+every comparison between scene and project (validate, sync, export) reads the empty back
+through the current calibration and carries it alongside the stored offsets, so a moved
+element is reported rather than sitting invisible until an export quietly writes it.
+*Re-import & reposition* discards those moves by definition, so it **confirms first**,
+naming every element whose scene value would be overwritten.
+
 ### 6.2 Export (Blender → Lua)
 
 Two modes, chosen per project:
@@ -360,6 +368,12 @@ Two modes, chosen per project:
 
 Export never touches `motherboard_def.lua` — properties are the developer's contract;
 RE-Blend only reads it for validation.
+
+Patch mode **confirms before writing**, listing every value it will change (node, panel,
+old → new). The safeguards below it — anchored edits, verification by re-parse, refusal
+on ambiguity — protect against RE-Blend corrupting the file; the confirmation protects
+against RE-Blend faithfully writing something the designer did not mean. An optional
+`.bak` copy is offered in the same dialog.
 
 ### 6.5 Optional layout editing (deliberate RE Edit overlap)
 

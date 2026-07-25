@@ -111,6 +111,38 @@ def test_orphan_element_is_a_warning(project_dir):
     assert report.ok  # warning, not error
 
 
+def test_moved_registration_empty_is_reported(project_dir):
+    link, elements = make_scene(project_dir)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    stored = knob.placements[0]
+    knob.derived_placements = (validation.schema.Placement(
+        stored.panel, stored.node, stored.x + 40, stored.y - 15),)
+    report = validate_link(link, elements)
+    moved = [f for f in report.warnings if f.code == "moved"]
+    assert len(moved) == 1
+    assert moved[0].subject == "Knob_65x65_61frames"
+    assert "+40, -15 px" in moved[0].message
+    assert report.ok  # a pending move is a warning, not a broken device
+
+
+def test_unmoved_elements_report_no_drift(project_dir):
+    link, elements = make_scene(project_dir)
+    for element in elements:
+        element.derived_placements = element.placements
+    assert "moved" not in codes(validate_link(link, elements))
+
+
+def test_layout_is_checked_where_the_element_now_sits(project_dir):
+    # Dragged into the 25 px interaction-free margin: the margin finding must
+    # follow the scene's position, not the stale one in the Lua.
+    link, elements = make_scene(project_dir)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    stored = knob.placements[0]
+    knob.derived_placements = (validation.schema.Placement(
+        stored.panel, stored.node, 5.0, stored.y),)
+    assert "edge-margin" in codes(validate_link(link, elements))
+
+
 def test_missing_state_table_is_a_warning(project_dir):
     link, elements = make_scene(project_dir)
     fader = next(e for e in elements if e.kind == kinds.FADER_HANDLE)

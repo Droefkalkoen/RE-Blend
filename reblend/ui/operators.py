@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -299,6 +300,61 @@ class REBLEND_OT_import_project(bpy.types.Operator):
         default=False,
     )
 
+    def invoke(self, context, event):
+        """Warn before repositioning discards scene-side changes.
+
+        Repositioning snaps every registration empty back onto what the Lua
+        says, so any drag that has not been exported is lost — silently, and
+        with no undo across a file save. Importing *without* repositioning only
+        adds, so it needs no confirmation.
+        """
+        if not self.reposition:
+            return self.execute(context)
+        losses = self._scene_side_changes(context)
+        if not losses:
+            return self.execute(context)
+        self._losses = losses
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        losses = getattr(self, "_losses", [])
+        col.label(text=f"{len(losses)} element(s) differ from device_2D.lua:",
+                  icon="ERROR")
+        box = col.box().column(align=True)
+        for line in losses[:10]:
+            box.label(text=line)
+        if len(losses) > 10:
+            box.label(text=f"…and {len(losses) - 10} more")
+        col.label(text="Repositioning overwrites them with the file's values.")
+        col.label(text="Export Layout first to keep them instead.")
+
+    def _scene_side_changes(self, context) -> list[str]:
+        """Scene values a reposition would overwrite, described for the dialog.
+
+        Both kinds count: an element dragged since the last export (drift the
+        Lua has never seen) and one whose stored values simply disagree with
+        the file. Sync's own diff finds the second; drift finds the first.
+        """
+        try:
+            link = load_project(_project_root(context))
+        except LuaConfigError:
+            return []   # execute() will report the same failure properly
+        elements = _scene_elements(_settings(context))
+        lines: list[str] = []
+        moved_paths: set[str] = set()
+        for element in elements:
+            for stored, derived in element.moved:
+                moved_paths.add(element.path)
+                lines.append(
+                    f"{element.path}  moved to {derived.x:.0f}, {derived.y:.0f} "
+                    f"(Lua: {stored.x:.0f}, {stored.y:.0f})"
+                )
+        for item in merge.diff_link(link.specs, elements):
+            if item.status == merge.CHANGED and item.path not in moved_paths:
+                lines.append(f"{item.path}  {item.summary}")
+        return lines
+
     def execute(self, context):
         try:
             link = load_project(_project_root(context))
@@ -337,7 +393,7 @@ class REBLEND_OT_validate(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
@@ -1530,11 +1586,44 @@ def _derived_primary_placement(collection, data: schema.ElementData, settings):
 
 def _store_placements(collection, data: schema.ElementData) -> None:
     """Write the placements (and their primary mirror) back onto the element."""
+    placements = data.effective_placements
     collection["re_placements"] = json.dumps(
-        [[p.panel, p.node, p.x, p.y] for p in data.placements])
-    if data.placements:
-        collection["re_offset_x"] = data.placements[0].x
-        collection["re_offset_y"] = data.placements[0].y
+        [[p.panel, p.node, p.x, p.y] for p in placements])
+    if placements:
+        collection["re_offset_x"] = placements[0].x
+        collection["re_offset_y"] = placements[0].y
+
+
+def _describe_edit(edit) -> str:
+    """One patch-mode edit in the panel's terms."""
+    if isinstance(edit, lua_writer.OffsetEdit):
+        return f"{edit.panel}/{edit.node}  offset -> {edit.x:.0f}, {edit.y:.0f}"
+    return f"{edit.panel}/{edit.node}  {edit.path} frames -> {edit.frames}"
+
+
+def _backup_file(path) -> None:
+    """Copy a file next to itself as ``<name>.bak``, replacing any older one."""
+    shutil.copy2(str(path), f"{path}.bak")
+
+
+def _element_snapshot(collection, settings) -> schema.ElementData:
+    """One element as the scene currently has it, drift included.
+
+    ``placements`` stays what the element's properties (and so the Lua) say;
+    ``derived_placements`` is what its registration empty says. Everything that
+    compares scene against project — validate, sync, export — goes through
+    here, so "I moved it and nothing noticed" cannot happen in one path and not
+    another.
+    """
+    data = schema.props_to_data(collection)
+    derived = _derived_primary_placement(collection, data, settings)
+    if derived is not None:
+        data.derived_placements = (derived,) + data.placements[1:]
+    return data
+
+
+def _scene_elements(settings) -> list[schema.ElementData]:
+    return [_element_snapshot(c, settings) for c in _element_collections()]
 
 
 class REBLEND_OT_export_patch(bpy.types.Operator):
@@ -1549,30 +1638,84 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
     bl_idname = "reblend.export_patch"
     bl_label = "Export Layout (Patch Lua)"
 
-    def execute(self, context):
-        settings = _settings(context)
+    backup: bpy.props.BoolProperty(
+        name="Keep a .bak copy",
+        description="Copy device_2D.lua to device_2D.lua.bak before patching",
+        default=False,
+    )
+
+    def invoke(self, context, event):
+        """Show what will change before overwriting the user's Lua.
+
+        Patch mode is careful — anchored edits, verified by re-parse, refused
+        on any ambiguity — but it still rewrites a file the designer maintains
+        by hand. Naming every value it will change turns "did that do what I
+        meant?" into a question answered before the write, not after.
+        """
+        plan = self._plan(context)
+        if plan is None:
+            return {"CANCELLED"}
+        _link, edits, notes = plan
+        if not edits:
+            self._report_no_op(notes)
+            return {"FINISHED"}
+        self._preview = [_describe_edit(edit) for edit in edits]
+        self._skipped = len(notes)
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        preview = getattr(self, "_preview", [])
+        col.label(text=f"Overwrite device_2D.lua — {len(preview)} value(s):",
+                  icon="ERROR")
+        box = col.box().column(align=True)
+        for line in preview[:10]:
+            box.label(text=line)
+        if len(preview) > 10:
+            box.label(text=f"…and {len(preview) - 10} more (full list in the console)")
+        if getattr(self, "_skipped", 0):
+            col.label(text=f"{self._skipped} unknown node(s) skipped — run Sync",
+                      icon="INFO")
+        col.label(text="Comments and formatting are preserved; the result is")
+        col.label(text="re-parsed before the file is replaced.")
+        col.prop(self, "backup")
+
+    def _plan(self, context):
+        """``(link, edits, notes)`` for the current scene, or ``None`` on error."""
         try:
             link = load_project(_project_root(context))
         except LuaConfigError as exc:
             self.report({"ERROR"}, str(exc))
+            return None
+        elements = _scene_elements(_settings(context))
+        edits, notes = lua_writer.compute_device_edits(link.device, elements)
+        return link, edits, notes
+
+    def _report_no_op(self, notes) -> None:
+        skipped = f" ({len(notes)} unknown node(s) skipped)" if notes else ""
+        self.report({"INFO"}, f"device_2D.lua already matches the scene{skipped}")
+
+    def execute(self, context):
+        settings = _settings(context)
+        plan = self._plan(context)
+        if plan is None:
             return {"CANCELLED"}
+        link, edits, notes = plan
+        snapshots = [(c, _element_snapshot(c, settings))
+                     for c in _element_collections()]
 
-        snapshots = []
-        for collection in _element_collections():
-            data = schema.props_to_data(collection)
-            derived = _derived_primary_placement(collection, data, settings)
-            if derived is not None:
-                data.placements = (derived,) + data.placements[1:]
-            snapshots.append((collection, data))
-
-        edits, notes = lua_writer.compute_device_edits(
-            link.device, [data for _, data in snapshots])
         for note in notes:
             print(f"[RE-Blend] export: {note}")
         if not edits:
-            skipped = f" ({len(notes)} unknown node(s) skipped)" if notes else ""
-            self.report({"INFO"}, f"device_2D.lua already matches the scene{skipped}")
+            self._report_no_op(notes)
             return {"FINISHED"}
+
+        if self.backup:
+            try:
+                _backup_file(link.device.source_path)
+            except OSError as exc:
+                self.report({"ERROR"}, f"could not write the .bak copy: {exc}")
+                return {"CANCELLED"}
 
         try:
             result = lua_writer.patch_device_2d_file(link.device.source_path, edits)
@@ -1592,7 +1735,8 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
         # element skipped as unknown ("run Sync") exported nothing, and
         # overwriting its mirror would silently desync it from the Lua.
         for collection, data in snapshots:
-            primary = data.placements[0] if data.placements else None
+            placements = data.effective_placements
+            primary = placements[0] if placements else None
             if primary is not None and link.device.node(
                     primary.panel, primary.node) is not None:
                 _store_placements(collection, data)
@@ -1623,7 +1767,7 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         items = merge.diff_link(link.specs, elements)
         props.store_merge_items(_settings(context), items)
 
@@ -1662,7 +1806,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         items = {item.path: item for item in merge.diff_link(link.specs, elements)}
 
         accepted = kept = flagged = 0
@@ -1687,7 +1831,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
                 rig_stale.append(item.path)
             accepted += 1
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         props.store_merge_items(settings, merge.diff_link(link.specs, elements))
 
         parts = [f"accepted {accepted} from Lua", f"kept {kept} scene value(s)"]

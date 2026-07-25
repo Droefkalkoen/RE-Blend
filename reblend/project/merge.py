@@ -100,8 +100,14 @@ def _field_changes(spec: ElementSpec, element: ElementData) -> tuple[FieldChange
     if spec.kind != element.kind:
         changes.append(FieldChange("kind", element.kind, spec.kind))
 
+    # "Mine" is where the scene *now* puts the element — a dragged registration
+    # empty is a scene-side change like any other, and the whole point of
+    # keep-mine is that exporting then writes it into the Lua.
     theirs = tuple((p.panel, p.node, float(p.x), float(p.y)) for p in spec.placements)
-    mine = tuple((p.panel, p.node, float(p.x), float(p.y)) for p in element.placements)
+    mine = tuple(
+        (p.panel, p.node, float(p.x), float(p.y))
+        for p in element.effective_placements
+    )
     if theirs != mine:
         changes.append(
             FieldChange("placements", _placements_str(mine), _placements_str(theirs))

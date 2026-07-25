@@ -118,6 +118,7 @@ def validate_project(
     _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
     _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
+    _check_placement_drift(report, elements)
     _check_state_tables(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
@@ -362,6 +363,33 @@ def _check_kinds(
             )
 
 
+def _check_placement_drift(
+    report: Report, elements: Sequence[schema.ElementData]
+) -> None:
+    """Report elements the designer has moved but not exported.
+
+    A registration empty *is* the element's position (§6.1), so dragging one is
+    a real change to the layout — but it lives only in the scene until an
+    export writes it into ``device_2D.lua``. Without this the two can disagree
+    indefinitely and nothing says so: the sheet renders from the scene, Reason
+    places it from the Lua, and the device is subtly mis-laid-out.
+    """
+    for element in elements:
+        for stored, derived in element.moved:
+            dx = derived.x - stored.x
+            dy = derived.y - stored.y
+            report.add(
+                WARNING,
+                "moved",
+                f"moved {dx:+.0f}, {dy:+.0f} px in the scene: "
+                f"({derived.x:.0f}, {derived.y:.0f}) vs "
+                f"({stored.x:.0f}, {stored.y:.0f}) in device_2D.lua — "
+                "Export Layout writes it, Re-import & Reposition discards it",
+                subject=element.path,
+                panel=stored.panel,
+            )
+
+
 def _check_state_tables(report: Report, elements: Sequence[schema.ElementData]) -> None:
     """Check the rig side of a multi-state element: does it *differ* per frame?
 
@@ -586,7 +614,10 @@ def _check_layout(
     for element in elements:
         if element.kind == kinds.BACKDROP or not element.has_frame_size:
             continue
-        for placement in element.placements:
+        # The layout to check is the one the designer can see: an element they
+        # have dragged is validated where it now sits, not where the Lua still
+        # thinks it is. The drift itself is reported separately.
+        for placement in element.effective_placements:
             bound = widget_index.get((placement.panel, placement.node), [])
             rects.setdefault(placement.panel, []).append(
                 _Rect(

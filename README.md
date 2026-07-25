@@ -131,7 +131,14 @@ the Image Editor. **Run RE2DRender / RE2DPreview** close the real loop (render o
 
 Moved a control? Drag its registration empty and click **Export Layout (Patch Lua)**. RE-Blend
 rewrites *only* the `offset`/`frames` number literals of nodes it knows, verifies the patched
-file by re-parsing it before replacing anything, and refuses when changes are ambiguous. 
+file by re-parsing it before replacing anything, and refuses when changes are ambiguous. It
+shows every value it's about to change and asks before overwriting, with an optional `.bak`.
+
+A dragged empty is a real layout edit, so it's tracked as one: the Sync panel counts elements
+that have moved since the last export, validation reports each one with its pixel delta, and
+layout checks run against where the element now sits. **Re-import & Reposition** discards those
+moves by definition — so it names everything it would overwrite and asks first.
+
 If the Lua changed upstream, **Sync With Project** lists what's new, removed, or different, 
 with per-item *Theirs / Mine* resolution; **Apply Resolutions** brings accepted changes in 
 through the same path a full import uses.

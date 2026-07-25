@@ -292,6 +292,19 @@ class REBLEND_PT_sync(bpy.types.Panel):
         col.operator("reblend.export_patch", icon="EXPORT")
         col.operator("reblend.sync_project", icon="FILE_REFRESH")
 
+        # Live, without needing a Sync run: dragging a registration empty is a
+        # layout edit, and the panel that offers to export should say when
+        # there is something to export.
+        moved = _moved_elements(context)
+        if moved:
+            box = layout.box()
+            box.label(text=f"{len(moved)} element(s) moved since the last export",
+                      icon="ERROR")
+            for path, dx, dy in moved[:5]:
+                box.label(text=f"{path}: {dx:+.0f}, {dy:+.0f} px")
+            if len(moved) > 5:
+                box.label(text=f"…and {len(moved) - 5} more")
+
         items = settings.merge_items
         if not items:
             layout.label(text="No differences recorded — run Sync", icon="INFO")
@@ -306,6 +319,17 @@ class REBLEND_PT_sync(bpy.types.Panel):
             for line in _wrap(item.summary):
                 box.label(text=line)
         layout.operator("reblend.apply_sync", icon="CHECKMARK")
+
+
+def _moved_elements(context) -> list[tuple[str, float, float]]:
+    """``(path, dx, dy)`` for every element dragged since the last export."""
+    from . import operators   # local: panels are imported during registration
+
+    moved = []
+    for element in operators._scene_elements(context.scene.reblend):
+        for stored, derived in element.moved:
+            moved.append((element.path, derived.x - stored.x, derived.y - stored.y))
+    return moved
 
 
 class REBLEND_PT_preview(bpy.types.Panel):

@@ -53,6 +53,31 @@ def test_changed_values_list_their_fields(project):
     assert (frames.mine, frames.theirs) == ("31", "61")
 
 
+def test_a_dragged_registration_empty_is_a_scene_side_change(project):
+    # Moving an empty changes derived_placements only; the stored mirror still
+    # agrees with the Lua. The diff must see the move, or "I repositioned it
+    # and nothing noticed" is the outcome.
+    elements = scene_elements(project)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    stored = knob.placements[0]
+    knob.derived_placements = (Placement(stored.panel, stored.node,
+                                         stored.x + 40, stored.y - 15),)
+    items = merge.diff_link(project.specs, elements)
+    assert [(i.path, i.status) for i in items] == [
+        ("Knob_65x65_61frames", merge.CHANGED)
+    ]
+    change = next(c for c in items[0].changes if c.field == "placements")
+    assert change.mine != change.theirs
+    assert f"{stored.x + 40:.0f}" in change.mine
+
+
+def test_an_unmoved_empty_still_diffs_empty(project):
+    elements = scene_elements(project)
+    for element in elements:
+        element.derived_placements = element.placements
+    assert merge.diff_link(project.specs, elements) == []
+
+
 def test_unsized_side_never_conflicts_on_frame_size(project):
     # The probed spec size is authoritative only when both sides are set and
     # disagree; an unset scene size (fresh import, no sheet yet) is not a diff.
