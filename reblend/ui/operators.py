@@ -828,7 +828,11 @@ def _seed_state_target(operator, context) -> None:
     if operator.action in _EMISSION_ACTIONS:
         material = obj.active_material if obj is not None else None
         operator.target = material.name if material is not None else ""
-        if material is not None and not operator.node:
+        if material is not None:
+            # Reseed rather than keep the "Emission" default: on a material
+            # whose emission comes from a Principled BSDF the default names a
+            # node that isn't there, and the field's whole job is to name one
+            # that is. A hand-typed node survives until the action changes.
             operator.node = _guess_emission_node(material)
         return
     if operator.action == "DRIVER_VALUE":
