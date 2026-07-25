@@ -19,10 +19,17 @@ project's Lua configuration so sizes, offsets, and frame counts are matched.
 Making RE GUI art by hand is challenging, since the lay-out needs to match between Blender and 
 config files in Lua. The SDK wants flat PNG sprite sheets under strict rules: vertical strips 
 with frame 0 on top, 8-bit straight alpha, pixel-exact registration across frames, and a frame 
-count that exactly matches what `device_2D.lua` declares. 
+count that exactly matches what `device_2D.lua` declares — plus a per-widget frame contract
+(a toggle button is 2 or 4 frames, a radio button always 2, an up/down button always 3) and a
+set of parts whose art belongs to Reason rather than to you. Those rules *are* documented; the
+trouble is that RE2DRender enforces almost none of them, so breaking one usually surfaces at
+submission rather than at build time. 
 
 RE-Blend's answer is to prevent these mismatches:
 
+- **The SDK's own rules, checked.** Panel geometry, per-widget frame counts, edge margins and
+  the required device parts are validated against what the SDK documents actually require —
+  see [`docs/sdk-gui-reference.md`](docs/sdk-gui-reference.md).
 - **Registration is guaranteed by construction.** Each element gets a fixed camera derived from
   a registration empty that never moves between frames. All frames of a control land on the
   same centre because the camera physically can't drift.
@@ -119,7 +126,9 @@ through the same path a full import uses.
 ## What it doesn't do
 
 RE-Blend produces the hi-res PNGs and never the 0.5× set — that's
-[RE2DRender](https://developer.reasonstudios.com/)'s job. It reads `motherboard_def.lua` for
+[RE2DRender](https://developer.reasonstudios.com/)'s job. Nor does it author the parts whose
+appearance Reason fixes (sockets, the name tape, the back-panel placeholder, CV trim knobs, the
+browse groups): it installs those from the SDK you point it at. It reads `motherboard_def.lua` for
 validation but never writes it, and it stays out of `realtime_controller.lua`, `display.lua`,
 and anything C++. It interoperates with [RE Edit](https://github.com/pongasoft/re-edit) rather
 than replacing it: both tools read and write the same two layout files, and files RE-Blend

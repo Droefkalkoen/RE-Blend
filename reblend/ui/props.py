@@ -63,10 +63,10 @@ class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
 
 
 class REBLEND_AP_preferences(bpy.types.AddonPreferences):
-    """Per-machine settings: SDK tool paths (§5.3).
+    """Per-machine settings: SDK tool paths and the SDK root (§5.3).
 
-    Deliberately add-on preferences, not scene properties — tool paths differ
-    per machine and must never be committed with a project or a ``.blend``.
+    Deliberately add-on preferences, not scene properties — these differ per
+    machine and must never be committed with a project or a ``.blend``.
     """
 
     bl_idname = ADDON_ID
@@ -81,13 +81,25 @@ class REBLEND_AP_preferences(bpy.types.AddonPreferences):
         description="Path to the SDK's RE2DPreview executable (per machine)",
         subtype="FILE_PATH",
     )
+    sdk_root: bpy.props.StringProperty(
+        name="SDK Root",
+        description=(
+            "Folder containing the Rack Extension SDK. RE-Blend reads the "
+            "stock 2D parts (sockets, name tape, placeholder, browse groups) "
+            "from here instead of rendering them — their appearance is fixed "
+            "by Reason. Usually the folder holding RE2DRender/Images"
+        ),
+        subtype="DIR_PATH",
+    )
 
     def draw(self, context):
         col = self.layout.column()
-        col.label(text="SDK tool paths are per-machine settings; they are "
+        col.label(text="SDK paths are per-machine settings; they are "
                        "never stored in the project or the .blend.")
         col.prop(self, "re2drender_path")
         col.prop(self, "re2dpreview_path")
+        col.separator()
+        col.prop(self, "sdk_root")
 
 
 def tool_preferences(context):

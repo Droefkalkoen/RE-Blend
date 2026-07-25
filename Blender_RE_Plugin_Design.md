@@ -14,11 +14,12 @@ package/import name `reblend`; distribution/repo name `re-blend`.
 ## 1. Problem statement
 
 Producing the 2D GUI art for a Reason Rack Extension is a pipeline problem, not a drawing
-problem. The SDK consumes flat PNG sprite sheets with hard, silent-failure rules. The SDK
-ships **no formal GUI authoring manual** — its documentation is essentially an acceptance
-testing checklist plus a set of example devices — so these rules are established by the
-example projects, the behaviour of the SDK's RE2DRender tool, and community practice
-(see §12):
+problem. The SDK consumes flat PNG sprite sheets with hard, silent-failure rules. Those
+rules *are* documented — SDK 4.6.0 ships a GUI designer manual, GUI design guidelines and
+a scripting specification covering all 25 widget types (see §12 and
+`docs/sdk-gui-reference.md`) — but the tooling does not enforce most of them. RE2DRender
+compiles art that submission review will later reject, so the rules have to be checked
+somewhere, and RE-Blend is that somewhere:
 
 - Sprite sheets are **vertical strips**, frame 0 on top, strip height =
   `frameHeight × frameCount`.
@@ -26,11 +27,18 @@ example projects, the behaviour of the SDK's RE2DRender tool, and community prac
 - Pixel-exact registration: every frame of a control must place its centre at the same
   X,Y or the control visibly wobbles/jitters in Reason.
 - The frame count baked into the art **must equal** the `frames` field in
-  `GUI2D/device_2D.lua` (and, for stepped properties, agree with `steps` in
-  `motherboard_def.lua`) or knobs render jumpy.
-- Everything is authored at hi-res (panel world = 3770 px wide; 1U = 345 px tall; folded
-  panels = 130 px) and RE2DRender generates the 0.5× set — the artist must never
-  hand-make it.
+  `GUI2D/device_2D.lua`, or knobs render jumpy. Beyond that, each widget type has its own
+  frame contract: a `toggle_button` takes 2 or 4 frames, a `momentary_button`,
+  `step_button` or `radio_button` exactly 2, an `up_down_button` exactly 3, and a
+  `sequence_fader` one frame per handle position (which for a stepped property means one
+  per `steps`). Most of these are *independent* of the bound property — see
+  `docs/sdk-gui-reference.md` §3.
+- Everything is authored at hi-res (panel world = 3770 px wide; 1U = 345 px tall, up to
+  9U; folded panels = 150 px) and RE2DRender generates the 0.5× set — the artist must
+  never hand-make it.
+- Some widgets' art is not the artist's to make at all: sockets, the name tape, the
+  back-panel placeholder, CV trim knobs and the browse groups must use the SDK's stock
+  images, and text/bounds widgets are never drawn from the authored pixels.
 
 Doing this by hand in Blender means: one camera setup per control, manually keyframed
 turntables whose frame counts drift from the Lua contract, hand-cropped renders, manual
@@ -160,7 +168,7 @@ provides:
 
 - A **Calibrate** operator that creates/repairs the panel reference: an orthographic
   camera framing exactly the panel rect (3770 × 345·U for the front/back at U rack
-  units, 3770 × 130 folded), film set transparent, resolution locked to the panel size.
+  units, 3770 × 150 folded), film set transparent, resolution locked to the panel size.
 - Per-element cameras derived from the same scale: ortho scale ⇔ `re_frame_w`,
   resolution = `re_frame_w × re_frame_h`, centred on the registration empty.
 - Panel-unit helpers: snap increments in panel px, a HUD readout of the selected
@@ -479,15 +487,22 @@ opaque binary drop.
    downscales. Mitigation: contact-sheet QA at 50% zoom (§5.4), material kit tuned for
    downscale legibility (§5.7). Worth an explicit "preview at 0.5×" toggle in the panel
    compositor.
-4. **Undocumented SDK behaviour.** There is no formal GUI manual to cite; the ground
-   truth is what RE2DRender accepts and what the example devices do. Concretely open:
-   the exact art semantics of `sequence_fader` — stepped faders can be authored either
-   as a 1-frame handle the SDK moves along a track (`handle_size` > 0), or as an N-frame
-   sheet with the handle position baked per frame (`handle_size = 0`). RE-Blend must
-   support both patterns; the state-table rig covers the N-frame case, a plain static
-   element covers the moving handle. Every such behaviour RE-Blend relies on must be
-   verified empirically against RE2DRender/Recon early and captured in RE-Blend's own
-   docs — which then become the written-down reference the SDK lacks.
+4. **SDK behaviour the documentation does not reach.** *Resolved, in part:* SDK 4.6.0
+   does publish a GUI designer manual, GUI design guidelines and a full scripting
+   specification, and `docs/sdk-gui-reference.md` transcribes what they say about panel
+   geometry, per-widget frame counts and the parts whose appearance is fixed. That
+   answers the `sequence_fader` question this risk used to leave open: a fader's
+   animation must include the handle's entire travel, one frame per position, and
+   `handle_size` configures press-to-jump hit behaviour rather than a drawing mode —
+   there is no 1-frame-moving-handle authoring pattern to support.
+   What remains genuinely empirical is narrower but real: RE2DRender does not *enforce*
+   most documented requirements (it echoes back whatever panel size it is handed, which
+   is how RE-Blend came to carry a 130 px folded height for a milestone), and its
+   undocumented behaviours — the multiple-of-5 frame bounds, the `-reframed` copy, the
+   `gui.lua`-stage checks — are only knowable by running it. So the rule stands with its
+   emphasis moved: verify against RE2DRender/Recon, but never treat "RE2DRender accepted
+   it" as evidence that a *requirement* is met. Capture both kinds of finding in
+   RE-Blend's own docs.
 5. **RE Edit overlap without RE Edit's maturity.** Overlap is deliberate (§6.5), but a
    half-working in-Blender widget editor is worse than none: it must never write
    anything the SDK or RE Edit rejects. Guard rails: layout editing lands only after
@@ -514,17 +529,27 @@ project's pipeline needs that RE-Blend can't do is a design bug in this document
 
 ## 12. Reference material
 
-There is **no formal GUI authoring manual in the RE SDK** — its written documentation
-amounts to an acceptance testing checklist plus licence texts. The authoritative
-references for RE-Blend's constraints are therefore:
+The SDK **does** document its 2D GUI contract, in three documents under `SDK/API/`.
+An earlier draft of this document claimed otherwise and reverse-engineered rules that
+were already written down; `docs/sdk-gui-reference.md` records what they actually say,
+with the corrections that followed. Those documents are Reason Studios' "all rights
+reserved" material and are never committed to this GPL-3.0 repository — cite them, do
+not copy them. In order of authority:
 
-- **The SDK's example devices** (`SDK/Examples/`) — the de-facto specification for
-  `device_2D.lua` / `hdgui_2D.lua` file shape, widget usage, frame conventions, and
-  stock parts (e.g. `SharedAudioJack`); the stereo-FX `SilenceDetectionEffect` is a good
-  canonical fixture.
-- **The SDK tools' observed behaviour** — what RE2DRender accepts/rejects and what
-  RE2DPreview/Recon display is the ground truth; RE-Blend's test suite must encode these
-  findings (see risk §10.4).
+- **`SDK/API/jukebox-scripting-specification.html`** — normative for `hdgui_2D.lua`: all
+  25 widget types, their attributes, and the frame count each animation must have. This
+  is the reference for anything widget-shaped.
+- **`SDK/API/gui-design-guidelines.html`** — the **requirement**/guideline split. Panel
+  dimensions, the 9U ceiling, edge margins, the mandatory device parts, and the
+  canonical lighting rig. Requirements here are submission-blocking.
+- **`SDK/API/gui-designer-manual-2d.html`** — the `device_2D.lua` format, nesting, panel
+  and snapshot dimension tables, and how RE2DRender is invoked.
+- **The SDK's example devices** (`SDK/Examples/`) — worked examples of file shape and
+  stock-part usage (e.g. `SharedAudioJack`); the stereo-FX `SilenceDetectionEffect` is a
+  good canonical fixture. Useful, but the specification outranks them.
+- **The SDK tools' observed behaviour** — still the ground truth for what the *tools* do,
+  which is not the same as what the spec requires: RE2DRender enforces very little.
+  RE-Blend's test suite must encode these findings (see risk §10.4).
 - **`SDK/Documentation/acceptance_testing_checklist.txt`** — the checklist Recon
   validates against (e.g. the On/Off/Bypass control appearing on the folded front).
 - **`SDK/API/Jukebox.h` / `JukeboxTypes.h`** — the API source of truth for anything

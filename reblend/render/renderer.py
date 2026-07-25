@@ -22,7 +22,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-from ..model import calibration, schema
+from ..model import calibration, kinds, schema
 from ..project.png_meta import read_png_meta
 from ..project.validation import ERROR, WARNING, Finding
 from . import bpy_io, stitcher, validators
@@ -59,6 +59,36 @@ INACTIVE_HIDDEN = "HIDDEN"
 
 #: The only engine whose object ray visibility makes shadow-only isolation work.
 CYCLES_ENGINE = "CYCLES"
+
+
+def _skip_reason(collection) -> str | None:
+    """Why this element must not be rendered, or None if it should be.
+
+    Two groups the SDK takes out of the artist's hands. For sockets, the
+    device-name tape, the back-panel placeholder, CV trim knobs and the
+    browse groups the scripting specification says "you cannot change the
+    appearance of this widget" and the design guidelines make using the
+    Reason Studios-supplied image a requirement — so RE-Blend installs the
+    stock file instead (RE-Blend > Install SDK Parts). For value displays,
+    popup buttons, patch names and sample drop zones Reason uses the graphics
+    definition only as a rectangle to lay text into or to hit-test against,
+    and never draws the authored pixels at all.
+    """
+    try:
+        data = schema.props_to_data(collection)
+    except (KeyError, ValueError):
+        return None
+    if kinds.renders_art(data.kind):
+        return None
+    if kinds.is_sdk_supplied(data.kind):
+        return (
+            f"'{data.path}' is an SDK-supplied part whose appearance Reason fixes — "
+            "not rendered; install the stock image with RE-Blend > Install SDK Parts"
+        )
+    return (
+        f"'{data.path}' is a bounds-only widget: Reason draws its contents itself "
+        "and uses the graphics only as a rectangle — not rendered"
+    )
 
 
 def _warn_shadow_engine(result, scene, collection, data, inactive_render) -> None:
@@ -99,9 +129,28 @@ def render_elements(
     inactive_render: str = INACTIVE_SHADOW,
     view_axis: "Vector | tuple | None" = None,
 ) -> list[RenderResult]:
-    """Render several elements' sheets; one element's failure stops nobody else."""
+    """Render several elements' sheets; one element's failure stops nobody else.
+
+    Elements whose art RE-Blend must not author are skipped rather than
+    rendered (:func:`reblend.model.kinds.renders_art`): SDK-supplied parts
+    (sockets, the name tape, the placeholder, browse groups) whose appearance
+    Reason fixes, and bounds-only widgets whose graphics Reason uses purely
+    as a text box or hit area. Each skip is reported so it is visible in the
+    panel rather than looking like a silently missing sheet.
+    """
     results = []
     for collection in collections:
+        skip = _skip_reason(collection)
+        if skip is not None:
+            results.append(
+                RenderResult(
+                    element=collection.name,
+                    findings=[
+                        Finding(WARNING, "not-rendered", skip, subject=collection.name)
+                    ],
+                )
+            )
+            continue
         try:
             results.append(
                 render_element(

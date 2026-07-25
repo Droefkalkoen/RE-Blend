@@ -144,10 +144,21 @@ backdrops therefore have to be the true panel size or the coordinate space is wr
 | Panel | Backdrop size (hi-res px) |
 | --- | --- |
 | `front` / `back` (2U) | **3770 × 690** |
-| `folded_front` / `folded_back` | **3770 × 130** |
+| `folded_front` / `folded_back` | **3770 × 150** |
 
-Width is the fixed panel world (3770); front/back height = rack units × 345 (design §3.1);
-folded height is 130. An 8-bit straight-alpha RGBA PNG is the expected format for all of them.
+Width is the fixed panel world (3770); front/back height = rack units × 345, capped at 9U;
+folded height is 150. An 8-bit straight-alpha RGBA PNG is the expected format for all of them.
+
+> **Correction (superseding the original finding).** This finding first recorded a folded height
+> of **130 px**, because that is what the spike fed RE2DRender and RE2DRender reported it back
+> without complaint. That was a misreading of the evidence: the tool *echoes* the backdrop size it
+> is given, so the run confirmed nothing about what the size should be. The SDK's GUI design
+> guidelines and the GUI designer manual's Table 1 both state 150 px, as a **requirement** — see
+> `docs/sdk-gui-reference.md` §1.
+>
+> The general lesson is worth more than the number: RE2DRender is a weak oracle. It enforces
+> almost none of the submission requirements, so "RE2DRender accepted it" establishes only that
+> the tool ran, never that the art is correct.
 
 ---
 

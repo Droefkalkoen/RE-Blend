@@ -38,6 +38,12 @@ front = {
 			},
 		},
 
+		-- static_decoration art is a single frame and may not animate
+		logo_plate = {
+			offset = { 2600, 100 },
+			{ path = "Logo_120x40_1frames" },
+		},
+
 		DeviceName = {
 			offset = { 1665, 25 },
 			{ path = "Tape_Horizontal_1frames" },
@@ -49,9 +55,6 @@ back = {
 	Panel_back_bg = {
 		{ path = "Panel_Back" },
 	},
-	CableOrigin = {
-		offset = { 1885, 172 },
-	},
 
 	{
 		MainInLeft = {
@@ -61,6 +64,11 @@ back = {
 		MainInRight = {
 			offset = { 105, 210 },
 			{ path = "SharedAudioJack" },
+		},
+		-- Reserved space Reason keeps clear: fixed 300 x 100.
+		Placeholder = {
+			offset = { 2100, 200 },
+			{ path = "Placeholder" },
 		},
 		DeviceName = {
 			offset = { 1665, 25 },

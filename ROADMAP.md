@@ -148,10 +148,12 @@ much I'd want them:
 - **Render-manifest diffing in CI**: compare the manifest against the last committed one and
   fail (or comment on the PR) when a sheet changed that shouldn't have. The manifest exists
   from M3; this is a small script on top that turns it into an art-regression gate.
-- **The missing GUI authoring manual.** Every undocumented SDK behaviour RE-Blend verifies
-  empirically (§10.4 — `sequence_fader` art semantics being the poster child) gets captured in
-  RE-Blend's docs anyway. Curating that into a standalone reference would be worth more to the
-  RE community than most features on this list.
+- **A practical GUI authoring reference.** `docs/sdk-gui-reference.md` now transcribes what the
+  SDK's own GUI documents require (panel geometry, per-widget frame counts, the parts Reason
+  owns) alongside the behaviours only RE2DRender can tell you (§10.4 — the multiple-of-5 frame
+  bounds and the `-reframed` copy being the poster children). Growing that into a standalone,
+  worked reference — with the failure mode each rule produces, which the SDK documents never
+  state — would be worth more to the RE community than most features on this list.
 - **Watch mode**: re-render dirty elements automatically on scene save. Dirty tracking exists
   from M3; this is a timer and a toggle.
 - **Animated flipbook export** (GIF/MP4 of the knob sweep) for design review outside Blender —

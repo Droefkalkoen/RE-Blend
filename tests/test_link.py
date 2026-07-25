@@ -30,6 +30,8 @@ def test_one_element_per_sprite_path(project):
         "Tape_Horizontal_1frames",
         "Fader_25x60_3frames",
         "SharedAudioJack",
+        "Logo_120x40_1frames",
+        "Placeholder",
     }
 
 
@@ -40,7 +42,11 @@ def test_kinds_and_frames(project):
     assert specs["Lamp_15x15_2frames"].kind == kinds.LAMP
     assert specs["Fader_25x60_3frames"].kind == kinds.FADER_HANDLE
     assert specs["SharedAudioJack"].kind == kinds.SOCKET
-    assert specs["Tape_Horizontal_1frames"].kind == kinds.STATIC
+    assert specs["Logo_120x40_1frames"].kind == kinds.STATIC
+    # Reason draws the tape and the placeholder itself: their art is the
+    # SDK's, so RE-Blend must not render over it.
+    assert specs["Tape_Horizontal_1frames"].kind == kinds.SDK_SUPPLIED
+    assert specs["Placeholder"].kind == kinds.SDK_SUPPLIED
     for panel_sheet in ("Panel_Front", "Panel_Back", "Panel_Folded_Front", "Panel_Folded_Back"):
         assert specs[panel_sheet].kind == kinds.BACKDROP
 
@@ -73,7 +79,8 @@ def test_frame_size_unknown_without_pngs(project):
 def test_widget_kinds_recorded(project):
     specs = by_path(project)
     assert "analog_knob" in specs["Knob_65x65_61frames"].widget_kinds
-    assert "static_decoration" in specs["Lamp_15x15_2frames"].widget_kinds
+    assert "sequence_meter" in specs["Lamp_15x15_2frames"].widget_kinds
+    assert "static_decoration" in specs["Logo_120x40_1frames"].widget_kinds
 
 
 def test_motherboard_steps_loaded(project):

@@ -331,26 +331,38 @@ def describe_channel(channel: Channel) -> str:
     return f"{target}: {data_path}"
 
 
-#: Default state names per kind. The designer fills in the actions; the
-#:*names* encode the SDK-conventional meaning of each frame (§4.3).
-_DEFAULT_NAMES: dict[str, tuple[str, ...]] = {
-    kinds.LAMP: ("unlit", "lit"),
-    kinds.BUTTON_TOGGLE: ("off", "on"),
-    kinds.BUTTON_MOMENTARY: ("released", "pressed"),
-    kinds.FADER_HANDLE: ("off", "on", "bypass"),  # the builtin_onoffbypass case
+#: Default state names per kind, as candidate tuples keyed by frame count.
+#: The designer fills in the actions; the *names* encode the SDK-defined
+#: meaning of each frame (§4.3, and the per-widget frame contracts in
+#: :data:`reblend.model.kinds.WIDGET_FRAME_RULES`).
+#:
+#: A toggle_button legitimately has either two or four frames, so it carries
+#: both namings; the four-frame form adds the held variants.
+_DEFAULT_NAMES: dict[str, tuple[tuple[str, ...], ...]] = {
+    kinds.LAMP: (("unlit", "lit"),),
+    kinds.BUTTON_TOGGLE: (
+        ("off", "on"),
+        ("off", "off_held", "on", "on_held"),
+    ),
+    kinds.BUTTON_MOMENTARY: (("released", "held"),),
+    kinds.BUTTON_UPDOWN: (("neutral", "up_held", "down_held"),),
+    kinds.FADER_HANDLE: (("off", "on", "bypass"),),  # the builtin_onoffbypass case
 }
 
 
 def default_state_table(kind: str, frames: int) -> StateTable | None:
     """A named-but-empty table for a multi-state kind, or None for no rig.
 
-    Knobs get a driver instead of states; statics/backdrops/sockets get
-    nothing. When the conventional names don't cover ``frames`` (a 5-step
-    selector, an 8-frame fader), states fall back to ``state_0…state_N−1``.
+    Knobs get a driver instead of states; statics, backdrops and SDK-supplied
+    parts get nothing. When no conventional naming has exactly ``frames``
+    entries (a 5-step selector, an 8-frame fader), states fall back to
+    ``state_0…state_N−1``.
     """
     if kinds.rig_for_kind(kind) != kinds.RIG_STATES:
         return None
-    names = _DEFAULT_NAMES.get(kind, ())
-    if len(names) != frames:
-        names = tuple(f"state_{i}" for i in range(frames))
+    names = tuple(f"state_{i}" for i in range(frames))
+    for candidate in _DEFAULT_NAMES.get(kind, ()):
+        if len(candidate) == frames:
+            names = candidate
+            break
     return StateTable(states=[State(name=name) for name in names])

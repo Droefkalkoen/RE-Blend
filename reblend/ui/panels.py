@@ -16,12 +16,18 @@ _KIND_ICONS = {
     "knob": "MESH_CIRCLE",
     "button_toggle": "CHECKBOX_HLT",
     "button_momentary": "RADIOBUT_ON",
+    "button_updown": "SORT_ASC",
     "fader_handle": "ARROW_LEFTRIGHT",
     "selector": "LINENUMBERS_ON",
     "lamp": "LIGHT",
     "backdrop": "MESH_PLANE",
     "static": "OBJECT_HIDDEN",
     "socket": "PLUGIN",
+    # Not rendered by RE-Blend: Reason owns the pixels (sdk_supplied) or uses
+    # the graphics only as a text/hit rectangle (text_bounds).
+    "sdk_supplied": "LOCKED",
+    "text_bounds": "SMALL_CAPS",
+    "display": "DESKTOP",
 }
 
 
@@ -311,6 +317,8 @@ class REBLEND_PT_preview(bpy.types.Panel):
         col = layout.column(align=True)
         col.operator("reblend.contact_sheet", icon="IMGDISPLAY")
         col.operator("reblend.flipbook", icon="PLAY")
+        col = layout.column(align=True)
+        col.operator("reblend.install_sdk_parts", icon="IMPORT")
         col = layout.column(align=True)
         col.operator("reblend.launch_tool", text="Run RE2DRender",
                      icon="RENDER_STILL").tool = "RENDER"
