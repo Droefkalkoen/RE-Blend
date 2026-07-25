@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -299,6 +300,61 @@ class REBLEND_OT_import_project(bpy.types.Operator):
         default=False,
     )
 
+    def invoke(self, context, event):
+        """Warn before repositioning discards scene-side changes.
+
+        Repositioning snaps every registration empty back onto what the Lua
+        says, so any drag that has not been exported is lost — silently, and
+        with no undo across a file save. Importing *without* repositioning only
+        adds, so it needs no confirmation.
+        """
+        if not self.reposition:
+            return self.execute(context)
+        losses = self._scene_side_changes(context)
+        if not losses:
+            return self.execute(context)
+        self._losses = losses
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        losses = getattr(self, "_losses", [])
+        col.label(text=f"{len(losses)} element(s) differ from device_2D.lua:",
+                  icon="ERROR")
+        box = col.box().column(align=True)
+        for line in losses[:10]:
+            box.label(text=line)
+        if len(losses) > 10:
+            box.label(text=f"…and {len(losses) - 10} more")
+        col.label(text="Repositioning overwrites them with the file's values.")
+        col.label(text="Export Layout first to keep them instead.")
+
+    def _scene_side_changes(self, context) -> list[str]:
+        """Scene values a reposition would overwrite, described for the dialog.
+
+        Both kinds count: an element dragged since the last export (drift the
+        Lua has never seen) and one whose stored values simply disagree with
+        the file. Sync's own diff finds the second; drift finds the first.
+        """
+        try:
+            link = load_project(_project_root(context))
+        except LuaConfigError:
+            return []   # execute() will report the same failure properly
+        elements = _scene_elements(_settings(context))
+        lines: list[str] = []
+        moved_paths: set[str] = set()
+        for element in elements:
+            for stored, derived in element.moved:
+                moved_paths.add(element.path)
+                lines.append(
+                    f"{element.path}  moved to {derived.x:.0f}, {derived.y:.0f} "
+                    f"(Lua: {stored.x:.0f}, {stored.y:.0f})"
+                )
+        for item in merge.diff_link(link.specs, elements):
+            if item.status == merge.CHANGED and item.path not in moved_paths:
+                lines.append(f"{item.path}  {item.summary}")
+        return lines
+
     def execute(self, context):
         try:
             link = load_project(_project_root(context))
@@ -337,7 +393,7 @@ class REBLEND_OT_validate(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
@@ -594,7 +650,7 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
             try:
                 table = state_tables.StateTable.from_json(raw)
                 keys = table.compile()
-                rigs.apply_state_table(table)
+                stale = rigs.apply_state_table(table)
             except (ValueError, KeyError) as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
@@ -611,29 +667,123 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                     "visibility/emission/transform actions to each state",
                 )
             else:
+                pruned = f", pruned {stale} stale key(s)" if stale else ""
                 self.report({"INFO"}, f"keyed {len(keys)} state action(s) over "
-                                      f"{table.frames} frames")
+                                      f"{table.frames} frames{pruned}")
             return {"FINISHED"}
 
         self.report({"INFO"}, f"'{data.kind}' elements need no rig")
         return {"FINISHED"}
 
     def _knob_axis(self, context, collection) -> tuple[float, float, float]:
-        """The world axis a knob spins around (§4.2).
+        return _knob_axis(context, collection)
 
-        An explicit Knob Rotation Axis setting wins outright; otherwise the
-        knob follows the Camera Axis through the registration empty, so it
-        faces the camera and spins in view even when the empty is tilted.
-        """
-        settings = _settings(context)
-        if settings.rotation_axis != "auto":
-            return calibration.axis_vector(settings.rotation_axis)
-        base = Vector(calibration.axis_vector(settings.camera_axis))
-        empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
-        if empty is None:
-            return tuple(base)
-        axis = empty.matrix_world.to_quaternion() @ base
-        return tuple(axis.normalized())
+
+def _knob_axis(context, collection) -> tuple[float, float, float]:
+    """The world axis a knob spins around (§4.2).
+
+    An explicit Knob Rotation Axis setting wins outright; otherwise the knob
+    follows the Camera Axis through the registration empty, so it faces the
+    camera and spins in view even when the empty is tilted.
+    """
+    settings = _settings(context)
+    if settings.rotation_axis != "auto":
+        return calibration.axis_vector(settings.rotation_axis)
+    base = Vector(calibration.axis_vector(settings.camera_axis))
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is None:
+        return tuple(base)
+    axis = empty.matrix_world.to_quaternion() @ base
+    return tuple(axis.normalized())
+
+
+class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
+    """(Re)generate every element's rig in one pass (§4.3, §7).
+
+    A rig is derived from ``re_frames``, so changing a frame count — or pulling
+    new counts in from the Lua on sync — leaves rigs stale across the whole
+    scene, and a stale rig renders a wrong sheet without complaining. Knobs are
+    re-driven only where a rotation driver already exists, since which object
+    spins is the one thing the element properties don't record; knobs with no
+    driver yet are reported so they can be done by hand.
+    """
+
+    bl_idname = "reblend.generate_all_rigs"
+    bl_label = "Generate All Rigs"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        rigged = skipped = pruned = 0
+        problems: list[str] = []
+
+        for collection in _element_collections():
+            data = schema.props_to_data(collection)
+            rig = kinds.rig_for_kind(data.kind)
+            if rig is None:
+                continue
+            try:
+                if rig == kinds.RIG_DRIVER:
+                    done = self._redrive_knob(context, collection, data)
+                    rigged += done
+                    skipped += not done
+                    if not done:
+                        problems.append(f"{data.path}: no rotation driver to rebuild")
+                    continue
+                stale, ok = self._reapply_states(collection, data)
+                pruned += stale
+                rigged += ok
+                skipped += not ok
+                if not ok:
+                    problems.append(f"{data.path}: no state actions yet")
+            except (ValueError, KeyError) as exc:
+                skipped += 1
+                problems.append(f"{data.path}: {exc}")
+
+        summary = f"rigged {rigged} element(s)"
+        if pruned:
+            summary += f", pruned {pruned} stale key(s)"
+        if skipped:
+            summary += f", skipped {skipped}"
+        self.report({"WARNING"} if problems else {"INFO"},
+                    summary + (" — " + "; ".join(problems[:3]) if problems else ""))
+        return {"FINISHED"}
+
+    def _redrive_knob(self, context, collection, data) -> bool:
+        rotor = _driven_rotor(collection)
+        if rotor is None:
+            return False
+        rigs.ensure_turntable_driver(
+            rotor,
+            frames=data.frames,
+            sweep_deg=float(collection.get("re_sweep_deg",
+                                           calibration.DEFAULT_SWEEP_DEG)),
+            axis=_knob_axis(context, collection),
+        )
+        return True
+
+    def _reapply_states(self, collection, data) -> tuple[int, bool]:
+        raw = str(collection.get("re_states", ""))
+        if not raw:
+            return 0, False
+        table = state_tables.StateTable.from_json(raw)
+        if not table.compile():          # named states, no actions
+            return 0, False
+        if table.frames != data.frames:
+            raise ValueError(
+                f"state table has {table.frames} states but re_frames = {data.frames}"
+            )
+        return rigs.apply_state_table(table), True
+
+
+def _driven_rotor(collection):
+    """The object in an element that already carries a rotation driver."""
+    for obj in collection.all_objects:
+        anim = obj.animation_data
+        if anim is None:
+            continue
+        if any(fcurve.data_path == "rotation_euler" for fcurve in anim.drivers):
+            return obj
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -668,14 +818,128 @@ def _load_state_table(collection, data) -> state_tables.StateTable:
         or state_tables.StateTable()
 
 
-def _value_kind(channel) -> str:
-    """Which editing widget a channel needs: BOOL, COLOR, or FLOAT."""
-    data_path = channel[2]
-    if data_path in ("hide_render", "hide_viewport"):
-        return "BOOL"
-    if 'inputs["Color"]' in data_path:
-        return "COLOR"
-    return "FLOAT"
+#: The model owns the data-path grammar, so it decides what widget a channel
+#: needs. Kept as a local alias because every operator here asks.
+_value_kind = state_tables.value_kind
+
+_EMISSION_ACTIONS = {"EMISSION_STRENGTH", "EMISSION_COLOR"}
+
+
+def _emission_node(material_name: str, node_name: str):
+    """The named shader node of a material, or ``None``."""
+    material = bpy.data.materials.get(material_name)
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return None
+    return tree.nodes.get(node_name)
+
+
+def _resolve_socket(node, want: str) -> str | None:
+    """The input on ``node`` that means ``want`` ('Strength' or 'Color').
+
+    Shaders disagree on the name: an *Emission* node has ``Strength`` and
+    ``Color``, a *Principled BSDF* has ``Emission Strength`` and ``Emission
+    Color``, and a group node has whatever its author typed. Resolving against
+    the real node is why the designer never has to know which — passing the
+    wrong one produced an unresolvable RNA path at Generate Rig time, long
+    after the mistake was made.
+    """
+    names = [socket.name for socket in node.inputs]
+    if want in names:
+        return want
+    wanted = want.lower()
+    emissive = [
+        name for name in names
+        if "emission" in name.lower() and wanted in name.lower()
+    ]
+    if emissive:
+        return emissive[0]
+    suffixed = [name for name in names if name.lower().endswith(wanted)]
+    return suffixed[0] if suffixed else None
+
+
+def _default_value_owner(context, collection):
+    """Where a new driver value lives: the element's registration empty.
+
+    It is the one object every element is guaranteed to have and the one that
+    never moves, so a value parked on it survives any amount of re-modelling.
+    """
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is not None:
+        return empty.name
+    obj = getattr(context, "active_object", None)
+    return obj.name if obj is not None else ""
+
+
+def _seed_state_target(operator, context) -> None:
+    """Fill the Add State Action dialog's target from the selection.
+
+    Location/visibility/shape-key actions target an object, emission actions a
+    material, and a driver value the element's registration empty — so the
+    useful default flips with the chosen action, hence an update callback
+    rather than a one-shot seed in ``invoke``. Typing over it always wins; only
+    changing the action type reseeds.
+    """
+    obj = getattr(context, "active_object", None)
+    if operator.action in _EMISSION_ACTIONS:
+        material = obj.active_material if obj is not None else None
+        operator.target = material.name if material is not None else ""
+        if material is not None:
+            # Reseed rather than keep the "Emission" default: on a material
+            # whose emission comes from a Principled BSDF the default names a
+            # node that isn't there, and the field's whole job is to name one
+            # that is. A hand-typed node survives until the action changes.
+            operator.node = _guess_emission_node(material)
+        return
+    if operator.action == "DRIVER_VALUE":
+        collection = getattr(context, "collection", None)
+        operator.target = (_default_value_owner(context, collection)
+                           if collection is not None else "")
+        if not operator.value_name:
+            operator.value_name = state_tables.generate_value_name(
+                _taken_value_names())
+        return
+    operator.target = obj.name if obj is not None else ""
+    if operator.action == "SHAPE_KEY" and obj is not None:
+        shape_key = obj.active_shape_key
+        operator.key_name = shape_key.name if shape_key is not None else ""
+
+
+def _guess_emission_node(material) -> str:
+    """The node most likely meant by "the emission node" of a material."""
+    tree = getattr(material, "node_tree", None)
+    if tree is None:
+        return "Emission"
+    for node in tree.nodes:
+        if node.type == "EMISSION":
+            return node.name
+    for node in tree.nodes:
+        if node.type == "BSDF_PRINCIPLED":
+            return node.name
+    return "Emission"
+
+
+def _taken_value_names() -> set[str]:
+    """Every driver-value name any element's table already uses.
+
+    Names are only unique per owning object, but making them unique across the
+    file keeps a driver's variable list readable when several elements park
+    values on their own empties.
+    """
+    taken: set[str] = set()
+    for collection in _element_collections():
+        raw = str(collection.get("re_states", ""))
+        if not raw:
+            continue
+        try:
+            table = state_tables.StateTable.from_json(raw)
+        except ValueError:
+            continue
+        for channel in table.channels():
+            name = state_tables.id_property_of(channel[2])
+            if name:
+                taken.add(name)
+    return taken
 
 
 class REBLEND_OT_add_state_action(bpy.types.Operator):
@@ -701,12 +965,15 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
             ("EMISSION_COLOR", "Emission Colour", "A material node's emission colour"),
             ("LOCATION", "Location", "One axis of an object's position (fader detents)"),
             ("SHAPE_KEY", "Shape Key", "A shape key's value on a mesh (pressed caps)"),
+            ("DRIVER_VALUE", "Driver Value",
+             "A named number the states drive, for your own drivers to read"),
         ),
         default="VISIBILITY",
+        update=_seed_state_target,
     )
     target: bpy.props.StringProperty(
-        name="Target", description="Object name (visibility/location/shape key) or "
-                                   "material name (emission)")
+        name="Target", description="Object name (visibility/location/shape key/"
+                                   "driver value) or material name (emission)")
     node: bpy.props.StringProperty(
         name="Node", default="Emission",
         description="Emission shader node inside the material")
@@ -714,20 +981,49 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
         name="Axis", items=(("0", "X", ""), ("1", "Y", ""), ("2", "Z", "")),
         default="0")
     key_name: bpy.props.StringProperty(name="Shape Key", description="Shape key name")
+    value_name: bpy.props.StringProperty(
+        name="Value Name",
+        description="Custom-property name the states drive; point your drivers "
+                    "at it as a Single Property variable")
 
     def invoke(self, context, event):
+        _seed_state_target(self, context)
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
         col = self.layout.column()
         col.prop(self, "action")
         col.prop(self, "target")
-        if self.action in {"EMISSION_STRENGTH", "EMISSION_COLOR"}:
+        if self.action in _EMISSION_ACTIONS:
             col.prop(self, "node")
+            self._draw_socket_hint(col)
         elif self.action == "LOCATION":
             col.prop(self, "axis")
         elif self.action == "SHAPE_KEY":
             col.prop(self, "key_name")
+        elif self.action == "DRIVER_VALUE":
+            col.prop(self, "value_name")
+            col.label(text="Drive anything with it: add a driver, Single",
+                      icon="DRIVER")
+            col.label(text=f'Property, this object, path ["{self.value_name}"]')
+
+    def _draw_socket_hint(self, col) -> None:
+        """Say up front which socket will be used, or that the node is missing.
+
+        The alternative is finding out at Generate Rig time via an unresolvable
+        RNA path, which names neither the node nor what it does have.
+        """
+        node = _emission_node(self.target.strip(), self.node.strip())
+        if node is None:
+            col.label(text="node not found in that material", icon="ERROR")
+            return
+        want = "Strength" if self.action == "EMISSION_STRENGTH" else "Color"
+        socket = _resolve_socket(node, want)
+        if socket is None:
+            col.label(text=f"'{node.name}' has no {want.lower()} input",
+                      icon="ERROR")
+        else:
+            col.label(text=f"input: {socket}", icon="NODE_SEL")
 
     def execute(self, context):
         collection, data = _require_states_element(self, context)
@@ -757,11 +1053,8 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
     def _build_actions(self, target):
         if self.action == "VISIBILITY":
             return state_tables.visibility(target, True)
-        if self.action == "EMISSION_STRENGTH":
-            return (state_tables.emission_strength(target, 0.0, self.node or "Emission"),)
-        if self.action == "EMISSION_COLOR":
-            return (state_tables.emission_color(
-                target, (0.0, 0.0, 0.0, 1.0), self.node or "Emission"),)
+        if self.action in _EMISSION_ACTIONS:
+            return self._build_emission(target)
         if self.action == "LOCATION":
             return (state_tables.location(target, int(self.axis), 0.0),)
         if self.action == "SHAPE_KEY":
@@ -770,7 +1063,43 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
                 self.report({"ERROR"}, "name the shape key")
                 return None
             return (state_tables.shape_key_value(target, key, 0.0),)
+        if self.action == "DRIVER_VALUE":
+            try:
+                return (state_tables.driver_value(
+                    target, self.value_name.strip(), 0.0),)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return None
         return None
+
+    def _build_emission(self, target):
+        """Bind to the socket the *actual* node has, not to a guessed name."""
+        node_name = self.node.strip() or "Emission"
+        node = _emission_node(target, node_name)
+        if node is None:
+            material = bpy.data.materials.get(target)
+            if material is None:
+                self.report({"ERROR"}, f"no material named '{target}'")
+            else:
+                self.report(
+                    {"ERROR"},
+                    f"material '{target}' has no shader node '{node_name}'",
+                )
+            return None
+        want = "Strength" if self.action == "EMISSION_STRENGTH" else "Color"
+        socket = _resolve_socket(node, want)
+        if socket is None:
+            inputs = ", ".join(f"'{s.name}'" for s in node.inputs)
+            self.report(
+                {"ERROR"},
+                f"node '{node_name}' has no {want.lower()} input — its inputs "
+                f"are: {inputs}",
+            )
+            return None
+        if self.action == "EMISSION_STRENGTH":
+            return (state_tables.emission_strength(target, 0.0, node_name, socket),)
+        return (state_tables.emission_color(
+            target, (0.0, 0.0, 0.0, 1.0), node_name, socket),)
 
 
 class REBLEND_OT_remove_state_action(bpy.types.Operator):
@@ -885,6 +1214,350 @@ class REBLEND_OT_set_state_value(bpy.types.Operator):
         return float(self.float_value)
 
 
+class REBLEND_OT_spread_state_values(bpy.types.Operator):
+    """Fill a control's in-between states by linear interpolation (§4.3).
+
+    Set the two extremes and let RE-Blend compute the rest: an 8-position
+    selector needs only its first and last handle position. For a
+    ``sequence_fader`` this is the only way to *guarantee* the spec's constant
+    travel between frames — typed-by-hand detents drift.
+    """
+
+    bl_idname = "reblend.spread_state_values"
+    bl_label = "Spread Between Extremes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    control: bpy.props.IntProperty(default=-1)
+    value_kind: bpy.props.StringProperty(default="FLOAT")
+    first_value: bpy.props.FloatProperty(name="First State")
+    last_value: bpy.props.FloatProperty(name="Last State")
+    first_color: bpy.props.FloatVectorProperty(
+        name="First State", size=4, subtype="COLOR", min=0.0, max=1.0,
+        default=(0.0, 0.0, 0.0, 1.0))
+    last_color: bpy.props.FloatVectorProperty(
+        name="Last State", size=4, subtype="COLOR", min=0.0, max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0))
+
+    def invoke(self, context, event):
+        _collection, table, channel = self._resolve(context)
+        if channel is None:
+            return {"CANCELLED"}
+        self.value_kind = _value_kind(channel)
+        first = table.value_in(0, channel)
+        last = table.value_in(table.frames - 1, channel)
+        if self.value_kind == "COLOR":
+            self.first_color = tuple(first) if first else (0.0, 0.0, 0.0, 1.0)
+            self.last_color = tuple(last) if last else (1.0, 1.0, 1.0, 1.0)
+        else:
+            self.first_value = float(first) if first is not None else 0.0
+            self.last_value = float(last) if last is not None else 0.0
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        col = self.layout.column()
+        if self.value_kind == "COLOR":
+            col.prop(self, "first_color")
+            col.prop(self, "last_color")
+        else:
+            col.prop(self, "first_value")
+            col.prop(self, "last_value")
+
+    def execute(self, context):
+        collection, table, channel = self._resolve(context)
+        if channel is None:
+            return {"CANCELLED"}
+        if self.value_kind == "COLOR":
+            start, end = tuple(self.first_color), tuple(self.last_color)
+        else:
+            start, end = float(self.first_value), float(self.last_value)
+        try:
+            values = table.spread_channel(channel, start, end)
+        except (ValueError, KeyError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        collection["re_states"] = table.to_json()
+        self.report(
+            {"INFO"},
+            f"spread {state_tables.describe_channel(channel)} over "
+            f"{len(values)} states",
+        )
+        return {"FINISHED"}
+
+    def _resolve(self, context):
+        """The element, its table and the addressed channel — or three Nones."""
+        blank = (None, None, None)
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return blank
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return blank
+        controls = table.controls()
+        if not 0 <= self.control < len(controls):
+            self.report({"ERROR"}, "no such state action")
+            return blank
+        channel = controls[self.control][0]
+        if not state_tables.is_interpolatable(channel):
+            self.report(
+                {"ERROR"},
+                f"{state_tables.describe_channel(channel)} is a flag, not a "
+                "quantity — nothing to interpolate",
+            )
+            return blank
+        if table.frames < 2:
+            self.report({"ERROR"}, "a spread needs at least 2 states")
+            return blank
+        return collection, table, channel
+
+
+class REBLEND_OT_capture_state_value(bpy.types.Operator):
+    """Capture one state's value for one control from the live scene (§4.3).
+
+    Pose the handle where the detent belongs, press this, and the state stores
+    where it actually is — the counterpart to typing a number into Set Value.
+    """
+
+    bl_idname = "reblend.capture_state_value"
+    bl_label = "Capture From Scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    state: bpy.props.IntProperty(default=-1)
+    control: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        controls = table.controls()
+        if not (0 <= self.state < table.frames and 0 <= self.control < len(controls)):
+            self.report({"ERROR"}, "no such state value")
+            return {"CANCELLED"}
+        channels = controls[self.control]
+        try:
+            value = rigs.read_channel_value(channels[0])
+        except KeyError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        for channel in channels:
+            table.set_value(self.state, channel, value)
+        collection["re_states"] = table.to_json()
+        self.report(
+            {"INFO"},
+            f"captured {state_tables.describe_channel(channels[0])} into "
+            f"'{table.states[self.state].name}'",
+        )
+        return {"FINISHED"}
+
+
+class REBLEND_OT_rename_state(bpy.types.Operator):
+    """Rename one state of the active element (§4.3).
+
+    Default names (``state_0…state_7``) say what index a frame is, which the
+    panel already shows; a name says what the position *means*.
+    """
+
+    bl_idname = "reblend.rename_state"
+    bl_label = "Rename State"
+    bl_options = {"REGISTER", "UNDO"}
+
+    state: bpy.props.IntProperty(default=-1)
+    name: bpy.props.StringProperty(name="Name")
+
+    def invoke(self, context, event):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        if not 0 <= self.state < table.frames:
+            self.report({"ERROR"}, "no such state")
+            return {"CANCELLED"}
+        self.name = table.states[self.state].name
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+            table.rename_state(self.state, self.name)
+        except (ValueError, IndexError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        collection["re_states"] = table.to_json()
+        return {"FINISHED"}
+
+
+class REBLEND_OT_reverse_states(bpy.types.Operator):
+    """Mirror the active element's state table end to end (§4.3).
+
+    For when a ``sequence_fader``'s ``inverted`` turns out the other way round:
+    the art is right, the frame order is backwards, and retyping N detents is
+    both tedious and a chance to fat-finger one.
+    """
+
+    bl_idname = "reblend.reverse_states"
+    bl_label = "Reverse States"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        table.reverse()
+        collection["re_states"] = table.to_json()
+        self.report({"INFO"}, f"reversed {table.frames} states — "
+                              "Generate Rig to re-key")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_repair_state_channels(bpy.types.Operator):
+    """Re-bind shader channels whose socket name no longer resolves (§4.3).
+
+    A channel authored against an *Emission* node's ``Strength`` does not
+    resolve on a *Principled BSDF*, which calls it ``Emission Strength`` —
+    swapping the material's shader is enough to break a table that was correct
+    when it was written. This repoints each broken channel at the socket the
+    node actually has, keeping every per-state value.
+    """
+
+    bl_idname = "reblend.repair_state_channels"
+    bl_label = "Repair Channels"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        repaired, unfixable = [], []
+        for channel in list(table.channels()):
+            outcome = self._repair(table, channel)
+            if outcome is None:
+                continue
+            (repaired if outcome[0] else unfixable).append(outcome[1])
+
+        if repaired:
+            collection["re_states"] = table.to_json()
+        if unfixable:
+            self.report({"WARNING"}, "; ".join(unfixable))
+        elif repaired:
+            self.report({"INFO"}, "repaired " + "; ".join(repaired))
+        else:
+            self.report({"INFO"}, "every channel resolves — nothing to repair")
+        return {"FINISHED"}
+
+    def _repair(self, table, channel):
+        """``(fixed, message)`` for a broken channel, or ``None`` if it's fine."""
+        id_type, target, data_path, _index = channel
+        node_name = state_tables.node_of(data_path)
+        socket = state_tables.socket_of(data_path)
+        if id_type != "materials" or node_name is None or socket is None:
+            return None
+        node = _emission_node(target, node_name)
+        if node is None:
+            return False, f"'{target}' has no node '{node_name}'"
+        if socket in [s.name for s in node.inputs]:
+            return None  # resolves fine
+
+        want = "Color" if socket.lower().endswith(("color", "colour")) else "Strength"
+        found = _resolve_socket(node, want)
+        if found is None:
+            return False, f"'{node_name}' has no input like '{socket}'"
+        table.retarget_channel(
+            channel,
+            data_path=f'node_tree.nodes["{node_name}"].inputs["{found}"]'
+                      ".default_value",
+        )
+        return True, f"'{socket}' -> '{found}' on {target}"
+
+
+class REBLEND_OT_copy_driver_reference(bpy.types.Operator):
+    """Copy a driver value's path to the clipboard (§4.3).
+
+    Wiring one up by hand means an object name and an ID-property path typed
+    into a driver variable exactly right; this puts the path where it can be
+    pasted and names the object to point the variable at.
+    """
+
+    bl_idname = "reblend.copy_driver_reference"
+    bl_label = "Copy Driver Path"
+
+    control: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        try:
+            table = _load_state_table(collection, data)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        controls = table.controls()
+        if not 0 <= self.control < len(controls):
+            self.report({"ERROR"}, "no such state action")
+            return {"CANCELLED"}
+        _id_type, target, data_path, _index = controls[self.control][0]
+        if state_tables.id_property_of(data_path) is None:
+            self.report({"ERROR"}, "that action is not a driver value")
+            return {"CANCELLED"}
+        context.window_manager.clipboard = data_path
+        self.report(
+            {"INFO"},
+            f"copied {data_path} — add a driver, Single Property variable, "
+            f"Object '{target}', paste as the path",
+        )
+        return {"FINISHED"}
+
+
+class REBLEND_OT_show_state(bpy.types.Operator):
+    """Jump the scene to the frame a state occupies (§4.3).
+
+    Sprite frame N *is* scene frame N, so previewing a state is just setting
+    the frame — but only once the rig has been generated, hence the hint.
+    """
+
+    bl_idname = "reblend.show_state"
+    bl_label = "Show State"
+    bl_options = {"REGISTER", "UNDO"}
+
+    state: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        collection, data = _require_states_element(self, context)
+        if collection is None:
+            return {"CANCELLED"}
+        if not 0 <= self.state < data.frames:
+            self.report({"ERROR"}, "no such state")
+            return {"CANCELLED"}
+        context.scene.frame_set(self.state)
+        if "re_preview_frame" in collection:
+            collection["re_preview_frame"] = self.state
+        return {"FINISHED"}
+
+
 # ---------------------------------------------------------------------------
 # M2 — sync & patch-mode export (§6.1, §6.2)
 # ---------------------------------------------------------------------------
@@ -913,11 +1586,44 @@ def _derived_primary_placement(collection, data: schema.ElementData, settings):
 
 def _store_placements(collection, data: schema.ElementData) -> None:
     """Write the placements (and their primary mirror) back onto the element."""
+    placements = data.effective_placements
     collection["re_placements"] = json.dumps(
-        [[p.panel, p.node, p.x, p.y] for p in data.placements])
-    if data.placements:
-        collection["re_offset_x"] = data.placements[0].x
-        collection["re_offset_y"] = data.placements[0].y
+        [[p.panel, p.node, p.x, p.y] for p in placements])
+    if placements:
+        collection["re_offset_x"] = placements[0].x
+        collection["re_offset_y"] = placements[0].y
+
+
+def _describe_edit(edit) -> str:
+    """One patch-mode edit in the panel's terms."""
+    if isinstance(edit, lua_writer.OffsetEdit):
+        return f"{edit.panel}/{edit.node}  offset -> {edit.x:.0f}, {edit.y:.0f}"
+    return f"{edit.panel}/{edit.node}  {edit.path} frames -> {edit.frames}"
+
+
+def _backup_file(path) -> None:
+    """Copy a file next to itself as ``<name>.bak``, replacing any older one."""
+    shutil.copy2(str(path), f"{path}.bak")
+
+
+def _element_snapshot(collection, settings) -> schema.ElementData:
+    """One element as the scene currently has it, drift included.
+
+    ``placements`` stays what the element's properties (and so the Lua) say;
+    ``derived_placements`` is what its registration empty says. Everything that
+    compares scene against project — validate, sync, export — goes through
+    here, so "I moved it and nothing noticed" cannot happen in one path and not
+    another.
+    """
+    data = schema.props_to_data(collection)
+    derived = _derived_primary_placement(collection, data, settings)
+    if derived is not None:
+        data.derived_placements = (derived,) + data.placements[1:]
+    return data
+
+
+def _scene_elements(settings) -> list[schema.ElementData]:
+    return [_element_snapshot(c, settings) for c in _element_collections()]
 
 
 class REBLEND_OT_export_patch(bpy.types.Operator):
@@ -932,30 +1638,84 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
     bl_idname = "reblend.export_patch"
     bl_label = "Export Layout (Patch Lua)"
 
-    def execute(self, context):
-        settings = _settings(context)
+    backup: bpy.props.BoolProperty(
+        name="Keep a .bak copy",
+        description="Copy device_2D.lua to device_2D.lua.bak before patching",
+        default=False,
+    )
+
+    def invoke(self, context, event):
+        """Show what will change before overwriting the user's Lua.
+
+        Patch mode is careful — anchored edits, verified by re-parse, refused
+        on any ambiguity — but it still rewrites a file the designer maintains
+        by hand. Naming every value it will change turns "did that do what I
+        meant?" into a question answered before the write, not after.
+        """
+        plan = self._plan(context)
+        if plan is None:
+            return {"CANCELLED"}
+        _link, edits, notes = plan
+        if not edits:
+            self._report_no_op(notes)
+            return {"FINISHED"}
+        self._preview = [_describe_edit(edit) for edit in edits]
+        self._skipped = len(notes)
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        preview = getattr(self, "_preview", [])
+        col.label(text=f"Overwrite device_2D.lua — {len(preview)} value(s):",
+                  icon="ERROR")
+        box = col.box().column(align=True)
+        for line in preview[:10]:
+            box.label(text=line)
+        if len(preview) > 10:
+            box.label(text=f"…and {len(preview) - 10} more (full list in the console)")
+        if getattr(self, "_skipped", 0):
+            col.label(text=f"{self._skipped} unknown node(s) skipped — run Sync",
+                      icon="INFO")
+        col.label(text="Comments and formatting are preserved; the result is")
+        col.label(text="re-parsed before the file is replaced.")
+        col.prop(self, "backup")
+
+    def _plan(self, context):
+        """``(link, edits, notes)`` for the current scene, or ``None`` on error."""
         try:
             link = load_project(_project_root(context))
         except LuaConfigError as exc:
             self.report({"ERROR"}, str(exc))
+            return None
+        elements = _scene_elements(_settings(context))
+        edits, notes = lua_writer.compute_device_edits(link.device, elements)
+        return link, edits, notes
+
+    def _report_no_op(self, notes) -> None:
+        skipped = f" ({len(notes)} unknown node(s) skipped)" if notes else ""
+        self.report({"INFO"}, f"device_2D.lua already matches the scene{skipped}")
+
+    def execute(self, context):
+        settings = _settings(context)
+        plan = self._plan(context)
+        if plan is None:
             return {"CANCELLED"}
+        link, edits, notes = plan
+        snapshots = [(c, _element_snapshot(c, settings))
+                     for c in _element_collections()]
 
-        snapshots = []
-        for collection in _element_collections():
-            data = schema.props_to_data(collection)
-            derived = _derived_primary_placement(collection, data, settings)
-            if derived is not None:
-                data.placements = (derived,) + data.placements[1:]
-            snapshots.append((collection, data))
-
-        edits, notes = lua_writer.compute_device_edits(
-            link.device, [data for _, data in snapshots])
         for note in notes:
             print(f"[RE-Blend] export: {note}")
         if not edits:
-            skipped = f" ({len(notes)} unknown node(s) skipped)" if notes else ""
-            self.report({"INFO"}, f"device_2D.lua already matches the scene{skipped}")
+            self._report_no_op(notes)
             return {"FINISHED"}
+
+        if self.backup:
+            try:
+                _backup_file(link.device.source_path)
+            except OSError as exc:
+                self.report({"ERROR"}, f"could not write the .bak copy: {exc}")
+                return {"CANCELLED"}
 
         try:
             result = lua_writer.patch_device_2d_file(link.device.source_path, edits)
@@ -975,7 +1735,8 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
         # element skipped as unknown ("run Sync") exported nothing, and
         # overwriting its mirror would silently desync it from the Lua.
         for collection, data in snapshots:
-            primary = data.placements[0] if data.placements else None
+            placements = data.effective_placements
+            primary = placements[0] if placements else None
             if primary is not None and link.device.node(
                     primary.panel, primary.node) is not None:
                 _store_placements(collection, data)
@@ -1006,7 +1767,7 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         items = merge.diff_link(link.specs, elements)
         props.store_merge_items(_settings(context), items)
 
@@ -1045,7 +1806,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         items = {item.path: item for item in merge.diff_link(link.specs, elements)}
 
         accepted = kept = flagged = 0
@@ -1070,7 +1831,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
                 rig_stale.append(item.path)
             accepted += 1
 
-        elements = [schema.props_to_data(c) for c in _element_collections()]
+        elements = _scene_elements(_settings(context))
         props.store_merge_items(settings, merge.diff_link(link.specs, elements))
 
         parts = [f"accepted {accepted} from Lua", f"kept {kept} scene value(s)"]
@@ -1464,6 +2225,14 @@ CLASSES = (
     REBLEND_OT_add_state_action,
     REBLEND_OT_remove_state_action,
     REBLEND_OT_set_state_value,
+    REBLEND_OT_spread_state_values,
+    REBLEND_OT_capture_state_value,
+    REBLEND_OT_rename_state,
+    REBLEND_OT_reverse_states,
+    REBLEND_OT_repair_state_channels,
+    REBLEND_OT_copy_driver_reference,
+    REBLEND_OT_show_state,
+    REBLEND_OT_generate_all_rigs,
     REBLEND_OT_export_patch,
     REBLEND_OT_sync_project,
     REBLEND_OT_apply_sync,

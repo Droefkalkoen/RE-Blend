@@ -151,7 +151,25 @@ the designer already thinks ("frame 0 = knob at minimum"):
   down, lamp dark), frame 1 = *On* (handle mid, lamp lit), frame 2 = *Bypass* (handle
   up, alternate lamp colour). RE-Blend compiles the state table into keyframes with
   **constant** interpolation so scrubbing the timeline previews exactly the discrete
-  sheet.
+  sheet. Numeric channels (transforms, emission strength, emission colour, shape keys)
+  additionally support a **linear spread**: the designer sets only the two extreme
+  states and RE-Blend fills the in-between ones by interpolation. An 8-position selector
+  therefore needs two positions typed rather than eight, and — the reason it is not
+  merely a convenience — a `sequence_fader`'s travel comes out *exactly* evenly spaced,
+  which the scripting specification requires of it ("the amount the handle travels
+  between each animation frame must be constant") and which hand-entered detents do not
+  guarantee. Values can also be **captured from the scene**, so a detent is placed by
+  posing the object in the viewport rather than by typing coordinates.
+- **Driver values**: the action vocabulary above covers what most controls need, but
+  Blender animates far more than RE-Blend has action types for — a modifier factor, a
+  geometry-node input, a constraint influence. Rather than grow an action type per
+  target, a state table can drive one **named custom property** (an `adjective-noun`
+  name, on the element's registration empty by convention) that the designer then points
+  any number of their own drivers at. One channel, arbitrary reach, and no new dialog per
+  property type.
+- Applying a table also **removes keys outside `0…frames−1`** on the channels it owns.
+  Shrinking a frame count otherwise leaves orphan keys that the render never visits but
+  the viewport does, so the preview quietly stops matching the sheet.
 - **Lamps / LEDs**: a two-state specialisation (unlit/lit) driving emission — the
   "lighting of indicators bound to frames" case. The lit state's emission colour can be
   picked from the project palette (§5.7).
@@ -327,6 +345,14 @@ Re-running Import on a linked scene performs a **sync**: new nodes appear as new
 placeholder elements, removed nodes are flagged (not auto-deleted), and changed
 offsets/frames/sizes are listed with per-item *accept theirs / keep mine* resolution.
 
+An element's registration empty **is** its position, so dragging one is a layout edit
+that lives only in the scene until an export writes it out. That drift is first-class:
+every comparison between scene and project (validate, sync, export) reads the empty back
+through the current calibration and carries it alongside the stored offsets, so a moved
+element is reported rather than sitting invisible until an export quietly writes it.
+*Re-import & reposition* discards those moves by definition, so it **confirms first**,
+naming every element whose scene value would be overwritten.
+
 ### 6.2 Export (Blender → Lua)
 
 Two modes, chosen per project:
@@ -342,6 +368,12 @@ Two modes, chosen per project:
 
 Export never touches `motherboard_def.lua` — properties are the developer's contract;
 RE-Blend only reads it for validation.
+
+Patch mode **confirms before writing**, listing every value it will change (node, panel,
+old → new). The safeguards below it — anchored edits, verification by re-parse, refusal
+on ambiguity — protect against RE-Blend corrupting the file; the confirmation protects
+against RE-Blend faithfully writing something the designer did not mean. An optional
+`.bak` copy is offered in the same dialog.
 
 ### 6.5 Optional layout editing (deliberate RE Edit overlap)
 

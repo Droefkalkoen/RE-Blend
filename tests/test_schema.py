@@ -87,6 +87,45 @@ def test_is_element():
     assert not schema.is_element({"other": 1})
 
 
+def _placed(x=100.0, y=200.0):
+    return ElementData(
+        node="knob_a", path="Knob",
+        placements=(Placement("front", "knob_a", x, y),),
+    )
+
+
+def test_effective_placements_prefer_the_scene_reading():
+    data = _placed()
+    assert data.effective_placements == data.placements   # no scene reading yet
+    data.derived_placements = (Placement("front", "knob_a", 140.0, 185.0),)
+    assert data.effective_placements == data.derived_placements
+
+
+def test_moved_pairs_stored_with_derived():
+    data = _placed()
+    data.derived_placements = (Placement("front", "knob_a", 140.0, 185.0),)
+    (stored, derived), = data.moved
+    assert (stored.x, derived.x) == (100.0, 140.0)
+
+
+def test_moved_ignores_sub_pixel_jitter():
+    data = _placed()
+    data.derived_placements = (Placement("front", "knob_a", 100.4, 199.6),)
+    assert data.moved == ()  # rounds to the same whole pixel the Lua stores
+
+
+def test_moved_ignores_placements_the_scene_says_nothing_about():
+    data = _placed()
+    data.derived_placements = (Placement("folded_front", "knob_a", 9.0, 9.0),)
+    assert data.moved == ()  # different node/panel: nothing to compare against
+
+
+def test_states_round_trip_through_props():
+    props = dict(schema.DEFAULTS)
+    props.update(re_node="knob_a", re_path="Knob", re_states='{"states": []}')
+    assert schema.props_to_data(props).states == '{"states": []}'
+
+
 def test_panels_deduplicate_in_order():
     data = ElementData(
         node="DeviceName",

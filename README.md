@@ -97,6 +97,19 @@ selectors, and lamps, build the **State Table**: add actions (visibility, emissi
 colour, a location axis, a shape key), set each state's value, and Generate Rig compiles them to
 constant-interpolation keyframes — scrubbing the timeline previews exactly the discrete sheet.
 
+Values don't have to be typed. **Capture From Scene** (eyedropper) stores whatever the object
+currently holds, so a fader detent is placed by moving it in the viewport. **Spread Between
+Extremes** fills every in-between state by linear interpolation from the first and last: an
+8-position selector needs only its two end positions, and a `sequence_fader`'s travel comes out
+exactly evenly spaced — which the SDK requires of it, and hand-typed detents don't guarantee.
+Validation flags uneven fader travel, state tables that don't match the frame count, and
+multi-frame controls with no rig at all.
+
+For anything the built-in actions don't cover, add a **Driver Value**: a named number
+(`lovely-cucumber`) the states drive, which your own drivers can read as a Single Property
+variable — so a state table can reach a modifier, a geometry-node input or a constraint without
+RE-Blend needing an action type for each.
+
 ### 4. Render and validate
 
 **Render All** (or **Render Active**) isolates each element, renders frames 0…N−1 through a
@@ -118,7 +131,14 @@ the Image Editor. **Run RE2DRender / RE2DPreview** close the real loop (render o
 
 Moved a control? Drag its registration empty and click **Export Layout (Patch Lua)**. RE-Blend
 rewrites *only* the `offset`/`frames` number literals of nodes it knows, verifies the patched
-file by re-parsing it before replacing anything, and refuses when changes are ambiguous. 
+file by re-parsing it before replacing anything, and refuses when changes are ambiguous. It
+shows every value it's about to change and asks before overwriting, with an optional `.bak`.
+
+A dragged empty is a real layout edit, so it's tracked as one: the Sync panel counts elements
+that have moved since the last export, validation reports each one with its pixel delta, and
+layout checks run against where the element now sits. **Re-import & Reposition** discards those
+moves by definition — so it names everything it would overwrite and asks first.
+
 If the Lua changed upstream, **Sync With Project** lists what's new, removed, or different, 
 with per-item *Theirs / Mine* resolution; **Apply Resolutions** brings accepted changes in 
 through the same path a full import uses.

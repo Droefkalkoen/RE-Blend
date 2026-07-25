@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from ..model import calibration, kinds, schema
+from ..model import calibration, kinds, schema, state_tables
 from ..render.validators import check_frame_bounds
 from . import link as link_mod
 from .lua_reader import PANELS, Device2D, Graphic, HDGui2D, Node2D
@@ -118,6 +118,8 @@ def validate_project(
     _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
     _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
+    _check_placement_drift(report, elements)
+    _check_state_tables(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
         _check_files(report, elements, gui2d_dir)
@@ -361,6 +363,96 @@ def _check_kinds(
             )
 
 
+def _check_placement_drift(
+    report: Report, elements: Sequence[schema.ElementData]
+) -> None:
+    """Report elements the designer has moved but not exported.
+
+    A registration empty *is* the element's position (§6.1), so dragging one is
+    a real change to the layout — but it lives only in the scene until an
+    export writes it into ``device_2D.lua``. Without this the two can disagree
+    indefinitely and nothing says so: the sheet renders from the scene, Reason
+    places it from the Lua, and the device is subtly mis-laid-out.
+    """
+    for element in elements:
+        for stored, derived in element.moved:
+            dx = derived.x - stored.x
+            dy = derived.y - stored.y
+            report.add(
+                WARNING,
+                "moved",
+                f"moved {dx:+.0f}, {dy:+.0f} px in the scene: "
+                f"({derived.x:.0f}, {derived.y:.0f}) vs "
+                f"({stored.x:.0f}, {stored.y:.0f}) in device_2D.lua — "
+                "Export Layout writes it, Re-import & Reposition discards it",
+                subject=element.path,
+                panel=stored.panel,
+            )
+
+
+def _check_state_tables(report: Report, elements: Sequence[schema.ElementData]) -> None:
+    """Check the rig side of a multi-state element: does it *differ* per frame?
+
+    Frame counts and widget contracts are checked elsewhere; this looks at
+    whether the art those frames will contain is actually distinct, which is
+    the failure the SDK tools cannot see at all. A fader with no state table
+    renders three identical frames and RE2DRender compiles them happily.
+    """
+    for element in elements:
+        if kinds.rig_for_kind(element.kind) != kinds.RIG_STATES:
+            continue
+
+        if not element.states:
+            if element.frames > 1:
+                report.add(
+                    WARNING,
+                    "states",
+                    f"'{element.kind}' element has {element.frames} frames but no "
+                    "state table — every frame would render identically",
+                    subject=element.path,
+                )
+            continue
+
+        try:
+            table = state_tables.StateTable.from_json(element.states)
+        except ValueError as exc:
+            report.add(ERROR, "states", f"state table is unreadable: {exc}",
+                       subject=element.path)
+            continue
+
+        if table.frames != element.frames:
+            report.add(
+                ERROR,
+                "states",
+                f"state table has {table.frames} states but the element declares "
+                f"{element.frames} frames — the rig cannot fill the sheet",
+                subject=element.path,
+            )
+        if not table.channels() and element.frames > 1:
+            report.add(
+                WARNING,
+                "states",
+                "state table names its states but carries no actions — every "
+                "frame would render identically",
+                subject=element.path,
+            )
+
+        # Only a fader's handle is required to travel a constant distance per
+        # frame (SDK scripting specification); other kinds move freely.
+        if element.kind != kinds.FADER_HANDLE:
+            continue
+        for channel, values in table.uneven_travel_channels():
+            spacing = ", ".join(f"{v:.4f}" for v in values)
+            report.add(
+                WARNING,
+                "travel",
+                f"{state_tables.describe_channel(channel)} is not evenly spaced "
+                f"({spacing}) — a sequence_fader's handle must travel the same "
+                "distance between every frame; use Spread Between Extremes",
+                subject=element.path,
+            )
+
+
 def _check_frame_geometry(report: Report, elements: Sequence[schema.ElementData]) -> None:
     for element in elements:
         if not element.has_frame_size:
@@ -522,7 +614,10 @@ def _check_layout(
     for element in elements:
         if element.kind == kinds.BACKDROP or not element.has_frame_size:
             continue
-        for placement in element.placements:
+        # The layout to check is the one the designer can see: an element they
+        # have dragged is validated where it now sits, not where the Lua still
+        # thinks it is. The drift itself is reported separately.
+        for placement in element.effective_placements:
             bound = widget_index.get((placement.panel, placement.node), [])
             rects.setdefault(placement.panel, []).append(
                 _Rect(

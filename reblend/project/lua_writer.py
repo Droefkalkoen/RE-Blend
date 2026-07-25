@@ -606,7 +606,9 @@ def compute_device_edits(
     edits: dict[tuple, OffsetEdit | FramesEdit] = {}
     notes: list[str] = []
     for element in elements:
-        for placement in element.placements:
+        # Export writes where the scene puts things, which is the registration
+        # empty's reading when the Blender side supplied one.
+        for placement in element.effective_placements:
             node = device.node(placement.panel, placement.node)
             if node is None:
                 notes.append(

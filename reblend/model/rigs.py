@@ -23,7 +23,12 @@ import bpy
 
 from . import calibration, state_tables
 
-__all__ = ["ensure_turntable_driver", "clear_turntable_driver", "apply_state_table"]
+__all__ = [
+    "ensure_turntable_driver",
+    "clear_turntable_driver",
+    "apply_state_table",
+    "read_channel_value",
+]
 
 
 def ensure_turntable_driver(
@@ -59,14 +64,20 @@ def clear_turntable_driver(rotor: "bpy.types.Object") -> None:
     rotor.driver_remove("rotation_euler")
 
 
-def apply_state_table(table: state_tables.StateTable) -> None:
+def apply_state_table(table: state_tables.StateTable) -> int:
     """Write a state table as constant-interpolation keyframes (§4.3).
 
     Compilation validates totality (every state sets every channel) before
     anything is touched, so a bad table changes nothing.
+
+    Keys the table owns that fall *outside* ``0…frames−1`` are removed:
+    shrinking ``re_frames`` from 8 to 3 used to leave five orphan keys behind,
+    which the render never visits (it renders exactly those frames) but the
+    viewport does — so the preview stopped matching the sheet, and growing the
+    count again silently resurrected stale poses. Returns how many were pruned.
     """
     keys = table.compile()
-    touched: set[tuple[str, str, str]] = set()
+    touched: set[tuple[str, str, str, int]] = set()
 
     for key in keys:
         block = _resolve_block(key.id_type, key.target)
@@ -77,12 +88,44 @@ def apply_state_table(table: state_tables.StateTable) -> None:
                 block.keyframe_insert(data_path=data_path, index=component, frame=key.frame)
         else:
             block.keyframe_insert(data_path=data_path, index=key.index, frame=key.frame)
-        touched.add((key.id_type, key.target, key.data_path))
+        touched.add((key.id_type, key.target, key.data_path, key.index))
 
-    for id_type, target, data_path in touched:
+    pruned = 0
+    for id_type, target, data_path, index in touched:
         block = _resolve_block(id_type, target)
         block, data_path = _hop_embedded(block, data_path)
-        _make_constant(block, data_path)
+        pruned += _finish_channel(block, data_path, index, table.frames)
+    return pruned
+
+
+def read_channel_value(channel: state_tables.Channel):
+    """The value a state-table channel currently holds in the scene (§4.3).
+
+    The inverse of :func:`_set_value`, so a designer can pose the object in the
+    viewport and capture that pose into a state instead of typing coordinates.
+    Raises the same :class:`KeyError` as applying a table when the datablock or
+    path is gone, so a stale channel reports the same way in both directions.
+    """
+    id_type, target, data_path, index = channel
+    block = _resolve_block(id_type, target)
+    block, data_path = _hop_embedded(block, data_path)
+
+    name = state_tables.id_property_of(data_path)
+    if name is not None:
+        if name not in block.keys():
+            raise KeyError(f"'{target}' has no custom property '{name}'")
+        return float(block[name])
+
+    owner, _, attr = _rna_split(block, data_path)
+    try:
+        current = getattr(owner, attr)
+    except AttributeError as exc:
+        raise KeyError(f"'{target}' has no property '{data_path}'") from exc
+    if hasattr(current, "__len__") and not isinstance(current, str):
+        if index >= 0:
+            return float(current[index])
+        return tuple(float(component) for component in current)
+    return float(current)
 
 
 def _resolve_block(id_type: str, target: str):
@@ -112,6 +155,12 @@ def _hop_embedded(block, data_path: str):
 
 
 def _set_value(block, data_path: str, index: int, value) -> None:
+    name = state_tables.id_property_of(data_path)
+    if name is not None:
+        # A driver value the table owns: create it on first apply so
+        # regenerating a rig on a fresh file restores it rather than failing.
+        block[name] = float(value)
+        return
     owner, _, attr = _rna_split(block, data_path)
     current = getattr(owner, attr)
     if isinstance(value, tuple):
@@ -127,18 +176,71 @@ def _set_value(block, data_path: str, index: int, value) -> None:
 def _rna_split(block, data_path: str):
     """Resolve a data path to (owner, path, final attribute name)."""
     head, _, attr = data_path.rpartition(".")
-    owner = block.path_resolve(head) if head else block
+    if not head:
+        return block, head, attr
+    try:
+        owner = block.path_resolve(head)
+    except ValueError as exc:
+        raise KeyError(_unresolved_message(block, data_path)) from exc
     return owner, head, attr
 
 
-def _make_constant(block, data_path: str) -> None:
+def _unresolved_message(block, data_path: str) -> str:
+    """Explain a dead path in the designer's terms, with what *is* there.
+
+    Blender's own "path could not be resolved" names the whole path and no
+    alternatives, which is the least useful moment to be terse: the usual cause
+    is a socket that exists under a different name on a different shader (an
+    Emission node's ``Strength`` is a Principled BSDF's ``Emission Strength``).
+    """
+    node_name = state_tables.node_of(data_path)
+    socket = state_tables.socket_of(data_path)
+    if node_name is None or socket is None:
+        return f"'{block.name}' has no '{data_path}'"
+
+    nodes = getattr(block, "nodes", None)
+    node = nodes.get(node_name) if nodes is not None else None
+    if node is None:
+        available = ", ".join(sorted(n.name for n in nodes)) if nodes else "none"
+        return (
+            f"'{block.name}' has no shader node '{node_name}' "
+            f"(nodes present: {available})"
+        )
+    inputs = ", ".join(f"'{socket_in.name}'" for socket_in in node.inputs)
+    return (
+        f"node '{node_name}' on '{block.name}' has no input '{socket}' — "
+        f"its inputs are: {inputs}"
+    )
+
+
+def _finish_channel(block, data_path: str, index: int, frames: int) -> int:
+    """Force constant interpolation and drop keys outside ``0…frames−1``.
+
+    Both passes filter on ``array_index`` when the channel addresses one
+    component, so keying a fader handle's Z never touches the designer's own
+    keys on X or Y.
+    """
     anim = block.animation_data
     if anim is None or anim.action is None:
-        return
+        return 0
+    pruned = 0
     for fcurve in _fcurves(anim.action):
-        if fcurve.data_path == data_path:
-            for point in fcurve.keyframe_points:
-                point.interpolation = "CONSTANT"
+        if fcurve.data_path != data_path:
+            continue
+        if index >= 0 and fcurve.array_index != index:
+            continue
+        stale = [
+            point for point in fcurve.keyframe_points
+            if not 0 <= round(point.co[0]) <= frames - 1
+        ]
+        for point in reversed(stale):
+            fcurve.keyframe_points.remove(point)
+        pruned += len(stale)
+        for point in fcurve.keyframe_points:
+            point.interpolation = "CONSTANT"
+        if stale:
+            fcurve.update()
+    return pruned
 
 
 def _fcurves(action) -> Iterable:

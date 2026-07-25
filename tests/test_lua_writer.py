@@ -302,6 +302,20 @@ def test_compute_edits_empty_when_in_sync(device_source):
     assert edits == [] and notes == []
 
 
+def test_compute_edits_exports_the_scenes_position_not_the_stored_one(device_source):
+    # The element's stored mirror still agrees with the Lua; its registration
+    # empty has been dragged. Export must write where the empty is — that is
+    # the whole reposition-in-Blender workflow.
+    device = read_device_2d_text(device_source)
+    element = ElementData(
+        node="knob_threshold", path="Knob_65x65_61frames", kind="knob", frames=61,
+        placements=(Placement("front", "knob_threshold", 950, 120),),
+        derived_placements=(Placement("front", "knob_threshold", 900, 130),),
+    )
+    edits, notes = compute_device_edits(device, [element])
+    assert edits == [OffsetEdit("front", "knob_threshold", 900, 130)] and notes == []
+
+
 def test_compute_edits_converts_absolute_to_relative(device_source):
     device = read_device_2d_text(device_source)
     # lamp_silence moved to absolute (335, 105); its group sits at (300, 100).

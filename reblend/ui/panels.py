@@ -104,7 +104,9 @@ class REBLEND_PT_active(bpy.types.Panel):
         row.prop(active, '["re_frame_h"]', text="Frame H")
         if data.has_frame_size:
             layout.operator("reblend.scale_to_bounds", icon="FULLSCREEN_EXIT")
-        layout.operator("reblend.generate_rig", icon="DRIVER")
+        row = layout.row(align=True)
+        row.operator("reblend.generate_rig", icon="DRIVER")
+        row.operator("reblend.generate_all_rigs", text="All", icon="OUTLINER")
 
 
 class REBLEND_PT_state_table(bpy.types.Panel):
@@ -139,7 +141,10 @@ class REBLEND_PT_state_table(bpy.types.Panel):
             layout.label(text="re_states JSON is corrupt", icon="ERROR")
             return
 
-        layout.operator("reblend.add_state_action", icon="ADD")
+        header = layout.row(align=True)
+        header.operator("reblend.add_state_action", icon="ADD")
+        header.operator("reblend.reverse_states", text="", icon="ARROW_LEFTRIGHT")
+        header.operator("reblend.repair_state_channels", text="", icon="TOOL_SETTINGS")
         if table.frames != data.frames:
             layout.label(
                 text=f"{table.frames} states vs re_frames {data.frames}",
@@ -153,20 +158,47 @@ class REBLEND_PT_state_table(bpy.types.Panel):
         box = layout.box()
         box.label(text="Actions", icon="ANIM")
         for index, channels in enumerate(controls):
+            channel = channels[0]
             row = box.row(align=True)
-            row.label(text=state_tables.describe_channel(channels[0]))
+            row.label(text=state_tables.describe_channel(channel))
+            if state_tables.id_property_of(channel[2]) is not None:
+                row.operator("reblend.copy_driver_reference",
+                             text="", icon="COPYDOWN").control = index
+            # Spreading a flag is meaningless, and with fewer than three states
+            # there is no in-between to fill: hide the button rather than offer
+            # an action that can only report an error.
+            if state_tables.is_interpolatable(channel) and table.frames > 2:
+                row.operator("reblend.spread_state_values",
+                             text="", icon="IPO_LINEAR").control = index
             row.operator("reblend.remove_state_action",
                          text="", icon="X").control = index
 
+        uneven = dict(
+            (chan, values) for chan, values in table.uneven_travel_channels()
+        ) if data.kind == kinds.FADER_HANDLE else {}
+        for chan in uneven:
+            layout.label(
+                text=f"{state_tables.describe_channel(chan)}: uneven travel",
+                icon="ERROR")
+
         for state_index, state in enumerate(table.states):
             sbox = layout.box()
-            sbox.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
+            title = sbox.row(align=True)
+            title.label(text=f"{state_index}: {state.name}", icon="KEYFRAME")
+            title.operator("reblend.rename_state", text="",
+                           icon="OUTLINER_DATA_FONT").state = state_index
+            title.operator("reblend.show_state", text="",
+                           icon="RESTRICT_VIEW_OFF").state = state_index
             for index, channels in enumerate(controls):
                 channel = channels[0]
                 row = sbox.row(align=True)
                 row.label(text=_short_channel(channel))
                 row.label(text=_format_value(channel,
                                              table.value_in(state_index, channel)))
+                grab = row.operator("reblend.capture_state_value",
+                                    text="", icon="EYEDROPPER")
+                grab.state = state_index
+                grab.control = index
                 op = row.operator("reblend.set_state_value",
                                   text="", icon="GREASEPENCIL")
                 op.state = state_index
@@ -260,6 +292,19 @@ class REBLEND_PT_sync(bpy.types.Panel):
         col.operator("reblend.export_patch", icon="EXPORT")
         col.operator("reblend.sync_project", icon="FILE_REFRESH")
 
+        # Live, without needing a Sync run: dragging a registration empty is a
+        # layout edit, and the panel that offers to export should say when
+        # there is something to export.
+        moved = _moved_elements(context)
+        if moved:
+            box = layout.box()
+            box.label(text=f"{len(moved)} element(s) moved since the last export",
+                      icon="ERROR")
+            for path, dx, dy in moved[:5]:
+                box.label(text=f"{path}: {dx:+.0f}, {dy:+.0f} px")
+            if len(moved) > 5:
+                box.label(text=f"…and {len(moved) - 5} more")
+
         items = settings.merge_items
         if not items:
             layout.label(text="No differences recorded — run Sync", icon="INFO")
@@ -274,6 +319,17 @@ class REBLEND_PT_sync(bpy.types.Panel):
             for line in _wrap(item.summary):
                 box.label(text=line)
         layout.operator("reblend.apply_sync", icon="CHECKMARK")
+
+
+def _moved_elements(context) -> list[tuple[str, float, float]]:
+    """``(path, dx, dy)`` for every element dragged since the last export."""
+    from . import operators   # local: panels are imported during registration
+
+    moved = []
+    for element in operators._scene_elements(context.scene.reblend):
+        for stored, derived in element.moved:
+            moved.append((element.path, derived.x - stored.x, derived.y - stored.y))
+    return moved
 
 
 class REBLEND_PT_preview(bpy.types.Panel):

@@ -91,6 +91,18 @@ class ElementData:
     frame_w: int = 0
     frame_h: int = 0
     placements: tuple[Placement, ...] = field(default_factory=tuple)
+    #: The element's ``re_states`` JSON verbatim, so validation can check the
+    #: state table (state count, a fader's even travel) without ``bpy``.
+    states: str = ""
+    #: Where the *scene* currently puts the element, read back from its
+    #: registration empty. Empty unless the Blender side filled it in.
+    #:
+    #: ``placements`` is what the Lua (and the element's stored mirror) says;
+    #: these two disagree exactly when the designer has dragged something and
+    #: not exported yet. Keeping both is what makes that drift reportable
+    #: instead of silent — moving an empty otherwise changed nothing any check
+    #: could see until an export quietly wrote it out.
+    derived_placements: tuple[Placement, ...] = field(default_factory=tuple)
 
     @property
     def panels(self) -> tuple[str, ...]:
@@ -98,6 +110,29 @@ class ElementData:
         for placement in self.placements:
             seen.setdefault(placement.panel, None)
         return tuple(seen)
+
+    @property
+    def effective_placements(self) -> tuple[Placement, ...]:
+        """Where the element is *now*: the scene's reading when there is one."""
+        return self.derived_placements or self.placements
+
+    @property
+    def moved(self) -> tuple[tuple[Placement, Placement], ...]:
+        """``(stored, derived)`` pairs that disagree — the unexported moves.
+
+        Compared at whole-pixel resolution, because that is the resolution the
+        Lua stores and the export rounds to: sub-pixel jitter from dragging an
+        empty is not a change anyone needs to hear about.
+        """
+        stored_by_node = {(p.panel, p.node): p for p in self.placements}
+        drift = []
+        for derived in self.derived_placements:
+            stored = stored_by_node.get((derived.panel, derived.node))
+            if stored is None:
+                continue
+            if (round(stored.x), round(stored.y)) != (round(derived.x), round(derived.y)):
+                drift.append((stored, derived))
+        return tuple(drift)
 
     @property
     def has_frame_size(self) -> bool:
@@ -231,4 +266,5 @@ def props_to_data(props: MutableMapping[str, Any]) -> ElementData:
         frame_w=int(working["re_frame_w"]),
         frame_h=int(working["re_frame_h"]),
         placements=tuple(placements),
+        states=str(working.get("re_states", "")),
     )
