@@ -99,17 +99,11 @@ class REBLEND_PT_active(bpy.types.Panel):
                      icon=_KIND_ICONS.get(data.kind, "OUTLINER_COLLECTION"))
         layout.label(text=f"{data.kind} · node '{data.node}' · "
                           f"{data.frame_w}x{data.frame_h}px · {data.frames}f")
-        # Frame W/H are edited through scene-level proxies whose update
-        # callback writes through and refits the guide boxes, so the bounds
-        # track a drag live in the viewport (raw IDProperties cannot carry an
-        # update). Dict-style assignment resyncs the proxies when the active
-        # element changed without firing the update (or tripping the
-        # no-writes-in-draw rule).
+        # Frame W/H are get/set proxies over the active element (props.py):
+        # the getter reads whichever element is active, the setter writes
+        # through and refits the guide boxes. Nothing to resync here — a
+        # draw() may not write state, dict-style assignment included.
         settings = context.scene.reblend
-        if (settings.active_frame_w, settings.active_frame_h) != (
-                data.frame_w, data.frame_h):
-            settings["active_frame_w"] = data.frame_w
-            settings["active_frame_h"] = data.frame_h
         row = layout.row(align=True)
         row.prop(settings, "active_frame_w", text="Frame W")
         row.prop(settings, "active_frame_h", text="Frame H")

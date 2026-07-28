@@ -83,7 +83,8 @@ def test_findings_json_round_trips_every_field():
 
 def test_merge_log_includes_status_summary_and_resolution():
     rows = [
-        MergeRow("New_Lamp", merge.ADDED, "new in Lua: lamp, 2 frame(s)"),
+        MergeRow("New_Lamp", merge.ADDED,
+                 "in the Lua, not in the scene: lamp, 2 frame(s)"),
         MergeRow("Old_Knob", merge.REMOVED,
                  "no longer in Lua — kept until you delete it", "DELETE"),
     ]
@@ -91,7 +92,8 @@ def test_merge_log_includes_status_summary_and_resolution():
         rows, project_root="/dev/mydevice", timestamp="2026-07-28 12:00:00")
     assert "RE-Blend sync log" in text
     assert "1 added, 1 removed" in text
-    assert "[ADDED] New_Lamp — new in Lua: lamp, 2 frame(s)" in text
+    assert ("[ADDED] New_Lamp — in the Lua, not in the scene: "
+            "lamp, 2 frame(s)" in text)
     assert "[REMOVED] Old_Knob — " in text
     assert "->  delete" in text
 

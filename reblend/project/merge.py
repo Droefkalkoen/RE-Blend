@@ -58,7 +58,12 @@ class MergeItem:
     @property
     def summary(self) -> str:
         if self.status == ADDED:
-            return f"new in Lua: {self.spec.kind}, {self.spec.frames} frame(s)"
+            # "In the Lua, not in the scene" — deliberately not "new": the
+            # node may be years old, and a scene-side delete resurfaces it
+            # here too, because the Lua owns existence. Retiring a control
+            # for good means removing it from the Lua contract itself.
+            return (f"in the Lua, not in the scene: {self.spec.kind}, "
+                    f"{self.spec.frames} frame(s)")
         if self.status == REMOVED:
             return "no longer in Lua — kept until you delete it"
         return "; ".join(str(change) for change in self.changes)
