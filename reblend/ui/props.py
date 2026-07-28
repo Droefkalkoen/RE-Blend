@@ -241,31 +241,42 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
     findings_source: bpy.props.StringProperty(default="")
     findings_time: bpy.props.StringProperty(default="")
     sync_time: bpy.props.StringProperty(default="")
-    # Live frame-size editing (§5.2): these mirror the active element's
-    # re_frame_w/h. Raw IDProperties cannot carry update callbacks, so the
-    # Active Element panel edits these proxies instead; the update writes
-    # through and refreshes the guide boxes, making the bounds track a drag
-    # live in the viewport.
+    # Live frame-size editing (§5.2): get/set proxies over the active
+    # element's re_frame_w/h (raw IDProperties cannot sit in layout.prop).
+    # The getter reads whichever element is active on every redraw and the
+    # setter writes through and refreshes the guide boxes, so the fields
+    # track the selection and a drag live — with no stored state to resync,
+    # because a draw() may not write anything (dict-style assignment
+    # included, which Blender rejects with "Writing to ID classes in this
+    # context is not allowed").
     active_frame_w: bpy.props.IntProperty(
         name="Frame W",
         description="Active element's per-frame width in pixels — the guide "
                     "boxes follow while you drag",
         min=0,
-        update=lambda self, context: _push_active_frame_size(context),
+        get=lambda self: _active_frame_size()[0],
+        set=lambda self, value: _set_active_frame_size(w=value),
     )
     active_frame_h: bpy.props.IntProperty(
         name="Frame H",
         description="Active element's per-frame height in pixels — the guide "
                     "boxes follow while you drag",
         min=0,
-        update=lambda self, context: _push_active_frame_size(context),
+        get=lambda self: _active_frame_size()[1],
+        set=lambda self, value: _set_active_frame_size(h=value),
     )
 
 
-def _push_active_frame_size(context) -> None:
+def _active_frame_size() -> tuple[int, int]:
     from . import operators  # local: operators imports props at module load
 
-    operators.apply_active_frame_size(context)
+    return operators.active_frame_size(bpy.context)
+
+
+def _set_active_frame_size(w: int | None = None, h: int | None = None) -> None:
+    from . import operators  # local: operators imports props at module load
+
+    operators.set_active_frame_size(bpy.context, w=w, h=h)
 
 
 def _timestamp() -> str:

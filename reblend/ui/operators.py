@@ -133,9 +133,20 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
         keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
+    old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
+    old_h = int(collection.get("re_frame_h", 0)) if not is_new else 0
     for key, value in schema.data_to_props(spec.to_element_data()).items():
         if key not in keep or key not in collection:
             collection[key] = value
+    if not is_new:
+        # A probed size overwriting a different (or unset) one changes what
+        # the registration empty's position *means* — compensate so the
+        # derived placement stays put (see _shift_for_resize).
+        new_w = int(collection.get("re_frame_w", 0))
+        new_h = int(collection.get("re_frame_h", 0))
+        if (new_w, new_h) != (old_w, old_h):
+            _shift_for_resize(collection, settings, old_w, old_h, new_w, new_h)
+            _refresh_guide_boxes(collection, settings)
     if is_new:
         table = state_tables.default_state_table(spec.kind, spec.frames)
         collection["re_states"] = table.to_json() if table else ""
@@ -288,24 +299,81 @@ def _refresh_guide_boxes(collection, settings) -> None:
         collection.objects.link(obj)
 
 
-def apply_active_frame_size(context) -> None:
-    """Write the panel's live Frame W/H proxies onto the active element and
-    refit its guide boxes — the update callback behind the interactive bounds
-    (§5.2). Blender fires property updates continuously during a drag, so the
-    wireframe tracks the value in the viewport as it changes.
+def _shift_for_resize(collection, settings, old_w: int, old_h: int,
+                      new_w: int, new_h: int) -> None:
+    """Keep the element's panel placement fixed across a frame-size change.
+
+    The registration empty sits at the frame *centre* once a size is known,
+    but at the raw device_2D offset point while it is not (§4.2 import) — so
+    the same world position changes meaning the moment a size is assigned.
+    Left alone, sizing an element silently shifts its derived placement by
+    half a frame (and an export then writes that phantom move into the Lua).
+    Shifting the empty by the half-size delta keeps the derived top-left
+    offset — the value the Lua actually stores — exactly where it was. With
+    Move Geometry on the element's objects travel too, the same way
+    Re-import & Reposition moves them, so modelled art stays registered.
+    """
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is None or (old_w, old_h) == (new_w, new_h):
+        return
+    old_cx, old_cy = calibration.element_center_px(0.0, 0.0, old_w, old_h)
+    new_cx, new_cy = calibration.element_center_px(0.0, 0.0, new_w, new_h)
+    delta = (
+        Vector(calibration.panel_px_to_world(new_cx, new_cy, settings.ppb))
+        - Vector(calibration.panel_px_to_world(old_cx, old_cy, settings.ppb))
+    )
+    if delta.length == 0.0:
+        return
+    if settings.reposition_geometry:
+        _translate_element(collection, delta)
+    else:
+        _set_world_location(empty, empty.matrix_world.translation + delta)
+
+
+def _apply_frame_size(collection, settings, w: int, h: int) -> None:
+    """Write one element's frame size and refit everything that depends on
+    it: the registration empty's placement convention and the guide boxes."""
+    old_w = int(collection.get("re_frame_w", 0))
+    old_h = int(collection.get("re_frame_h", 0))
+    if (old_w, old_h) == (w, h):
+        return
+    collection["re_frame_w"] = w
+    collection["re_frame_h"] = h
+    _shift_for_resize(collection, settings, old_w, old_h, w, h)
+    _refresh_guide_boxes(collection, settings)
+
+
+def active_frame_size(context) -> tuple[int, int]:
+    """The active element's per-frame size, ``(0, 0)`` when there is none.
+
+    The panel's Frame W/H fields are get/set proxies over this (raw
+    IDProperties cannot sit in ``layout.prop``), so the fields always show
+    the active element without the panel writing anything during draw —
+    Blender forbids draw-time writes, dict-style assignment included.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return (0, 0)
+    return (int(collection.get("re_frame_w", 0)),
+            int(collection.get("re_frame_h", 0)))
+
+
+def set_active_frame_size(context, w: int | None = None,
+                          h: int | None = None) -> None:
+    """Setter behind the panel's Frame W/H proxies (§5.2).
+
+    Blender fires the set continuously during a drag, so the guide boxes
+    (and the placement-preserving empty shift) track the value live.
     """
     collection = getattr(context, "collection", None)
     if collection is None or not schema.is_element(collection):
         return
     settings = _settings(context)
-    w, h = int(settings.active_frame_w), int(settings.active_frame_h)
-    current = (int(collection.get("re_frame_w", 0)),
-               int(collection.get("re_frame_h", 0)))
-    if current == (w, h):
-        return
-    collection["re_frame_w"] = w
-    collection["re_frame_h"] = h
-    _refresh_guide_boxes(collection, settings)
+    if w is None:
+        w = int(collection.get("re_frame_w", 0))
+    if h is None:
+        h = int(collection.get("re_frame_h", 0))
+    _apply_frame_size(collection, settings, int(w), int(h))
 
 
 def _clear_guide_boxes(collection) -> None:
@@ -596,9 +664,7 @@ class REBLEND_OT_set_frame_size(bpy.types.Operator):
                        if not schema.props_to_data(c).has_frame_size]
 
         for collection in targets:
-            collection["re_frame_w"] = w
-            collection["re_frame_h"] = h
-            _refresh_guide_boxes(collection, settings)
+            _apply_frame_size(collection, settings, w, h)
 
         if not targets:
             self.report({"INFO"}, "no elements needed a frame size")
