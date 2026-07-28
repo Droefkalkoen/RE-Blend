@@ -398,6 +398,7 @@ class REBLEND_PT_preview(bpy.types.Panel):
         col.operator("reblend.flipbook", icon="PLAY")
         col = layout.column(align=True)
         col.operator("reblend.install_sdk_parts", icon="IMPORT")
+        col.operator("reblend.reference_images", icon="IMAGE_REFERENCE")
         col = layout.column(align=True)
         col.operator("reblend.launch_tool", text="Run RE2DRender",
                      icon="RENDER_STILL").tool = "RENDER"

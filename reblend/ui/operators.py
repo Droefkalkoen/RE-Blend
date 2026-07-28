@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -519,50 +520,80 @@ class REBLEND_OT_import_project(bpy.types.Operator):
         """
         if not self.reposition:
             return self.execute(context)
-        losses = self._scene_side_changes(context)
-        if not losses:
+        keepable, derived = self._scene_side_changes(context)
+        if not keepable and not derived:
             return self.execute(context)
-        self._losses = losses
+        self._keepable = keepable
+        self._derived = derived
         return context.window_manager.invoke_props_dialog(self, width=460)
 
     def draw(self, context):
         col = self.layout.column()
-        losses = getattr(self, "_losses", [])
-        col.label(text=f"{len(losses)} element(s) differ from device_2D.lua:",
-                  icon="ERROR")
-        box = col.box().column(align=True)
-        for line in losses[:10]:
-            box.label(text=line)
-        if len(losses) > 10:
-            box.label(text=f"…and {len(losses) - 10} more")
-        col.label(text="Repositioning overwrites them with the file's values.")
-        col.label(text="Export Layout first to keep them instead.")
+        keepable = getattr(self, "_keepable", [])
+        derived = getattr(self, "_derived", [])
+        col.label(
+            text=f"{len(keepable) + len(derived)} value(s) differ from the "
+                 "project files:",
+            icon="ERROR")
+        if keepable:
+            box = col.box().column(align=True)
+            for line in keepable[:8]:
+                box.label(text=line)
+            if len(keepable) > 8:
+                box.label(text=f"…and {len(keepable) - 8} more")
+            col.label(text="Repositioning overwrites these with the file's values.")
+            col.label(text="Export Layout first to keep them instead.")
+        if derived:
+            box = col.box().column(align=True)
+            for line in derived[:8]:
+                box.label(text=line)
+            if len(derived) > 8:
+                box.label(text=f"…and {len(derived) - 8} more")
+            col.label(text="These come from the project itself — the hdgui_2D")
+            col.label(text="widget type and the PNG on disk. Export cannot keep")
+            col.label(text="them; change the widget or the art instead.")
 
-    def _scene_side_changes(self, context) -> list[str]:
-        """Scene values a reposition would overwrite, described for the dialog.
+    def _scene_side_changes(self, context) -> tuple[list[str], list[str]]:
+        """Scene values a reposition would overwrite, grouped for the dialog.
 
-        Both kinds count: an element dragged since the last export (drift the
-        Lua has never seen) and one whose stored values simply disagree with
-        the file. Sync's own diff finds the second; drift finds the first.
+        Two groups, because the escape hatches differ. *Keepable* values —
+        placements (a dragged empty, or a stored offset the file disagrees
+        with) and frame counts — are exactly what Export Layout writes, so
+        exporting first preserves them. *Derived* values are defined by the
+        project itself: kind follows the hdgui_2D widget type and frame size
+        is probed from the PNG on disk, so no export can keep the scene's
+        version — the widget or the art has to change instead. Lumping the
+        two together read as a contradiction: this dialog said "Export
+        Layout first", the export replied "already matches" (it only writes
+        offsets/frames), and the next re-import warned again.
         """
         try:
             link = load_project(_project_root(context))
         except LuaConfigError:
-            return []   # execute() will report the same failure properly
+            return [], []   # execute() will report the same failure properly
         elements = _scene_elements(context)
-        lines: list[str] = []
+        keepable: list[str] = []
+        derived: list[str] = []
         moved_paths: set[str] = set()
         for element in elements:
-            for stored, derived in element.moved:
+            for stored, drifted in element.moved:
                 moved_paths.add(element.path)
-                lines.append(
-                    f"{element.path}  moved to {derived.x:.0f}, {derived.y:.0f} "
+                keepable.append(
+                    f"{element.path}  moved to {drifted.x:.0f}, {drifted.y:.0f} "
                     f"(Lua: {stored.x:.0f}, {stored.y:.0f})"
                 )
         for item in merge.diff_link(link.specs, elements):
-            if item.status == merge.CHANGED and item.path not in moved_paths:
-                lines.append(f"{item.path}  {item.summary}")
-        return lines
+            if item.status != merge.CHANGED:
+                continue
+            for change in item.changes:
+                if change.field == "placements" and item.path in moved_paths:
+                    continue    # already listed as a move, in friendlier terms
+                line = f"{item.path}  {change}"
+                if change.field in ("placements", "frames"):
+                    keepable.append(line)
+                else:           # kind, frame size
+                    derived.append(line)
+        return keepable, derived
 
     def execute(self, context):
         try:
@@ -1903,7 +1934,11 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
 
     def _report_no_op(self, notes) -> None:
         skipped = f" ({len(notes)} unknown node(s) skipped)" if notes else ""
-        self.report({"INFO"}, f"device_2D.lua already matches the scene{skipped}")
+        self.report(
+            {"INFO"},
+            "nothing to patch: the offsets and frame counts in device_2D.lua "
+            f"already match the scene{skipped}",
+        )
 
     def execute(self, context):
         settings = _settings(context)
@@ -2731,6 +2766,119 @@ class REBLEND_OT_install_sdk_parts(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _refresh_reference_image(collection, data: schema.ElementData, settings,
+                             image) -> bool:
+    """Create or update the element's reference image empties; True when new.
+
+    One image empty per placement, marked ``re_guide = "ref"`` so element
+    deletion sweeps it and the guide-box logic ignores it. Positions are
+    snapped absolute from the current effective placement on every run, so
+    re-running the operator is also the repair path. The image displays at
+    its native panel scale (pixel size over Pixels/Unit); the empty sits at
+    the frame centre, or the image's own centre when the element is unsized.
+    """
+    refs = sorted((o for o in collection.objects if o.get("re_guide") == "ref"),
+                  key=lambda o: o.name)
+    placements = data.effective_placements
+    for surplus in refs[len(placements):]:
+        bpy.data.objects.remove(surplus, do_unlink=True)
+    refs = refs[:len(placements)]
+
+    created = False
+    iw, ih = int(image.size[0]), int(image.size[1])
+    for index, placement in enumerate(placements):
+        if index < len(refs):
+            obj = refs[index]
+        else:
+            obj = bpy.data.objects.new(f"ref_{data.path}_{index}", None)
+            obj.empty_display_type = "IMAGE"
+            obj.empty_image_offset = (-0.5, -0.5)   # centred on the empty
+            obj.hide_render = True
+            obj.hide_select = True
+            obj["re_guide"] = "ref"
+            # Panels live in the world XZ plane (calibration): stand the
+            # image up to match, facing the front camera on -Y.
+            obj.rotation_euler = (math.pi / 2.0, 0.0, 0.0)
+            collection.objects.link(obj)
+            created = True
+        obj.data = image
+        # Blender draws an image empty with its larger side spanning the
+        # display size, aspect preserved — exact for the one-frame sheets
+        # SDK parts use, since the sheet then *is* the frame.
+        obj.empty_display_size = max(iw, ih) / settings.ppb
+        if data.has_frame_size:
+            cx, cy = calibration.element_center_px(
+                placement.x, placement.y, data.frame_w, data.frame_h)
+        else:
+            cx, cy = (placement.x + iw / 2.0, placement.y + ih / 2.0)
+        origin = _origin_offset(settings, placement.panel)
+        obj.location = Vector(
+            calibration.panel_px_to_world(cx, cy, settings.ppb, origin))
+    return created
+
+
+class REBLEND_OT_reference_images(bpy.types.Operator):
+    """Show the project's fixed art in the viewport as image empties (§5.3).
+
+    SDK-supplied parts — sockets, the device-name tape, the back-panel
+    placeholder, the browse groups — are never rendered by RE-Blend, so
+    their elements normally sit in the scene as bare wireframe boxes. This
+    drops each such part's ``GUI2D/<path>.png`` into its collection as a
+    non-rendering image empty at true panel scale, so the complete panel
+    picture is visible while placing the tape, jacks and the rest.
+
+    Image empties rather than textured planes, deliberately: they need no
+    material, display in every shading mode, respect the PNG's alpha, and
+    cannot leak into a render. Run Install SDK Parts first so the stock art
+    exists in GUI2D; re-running this refreshes both images and positions.
+    """
+
+    bl_idname = "reblend.reference_images"
+    bl_label = "Add Reference Images"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        try:
+            root = _project_root(context)
+        except LuaConfigError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        settings = _settings(context)
+        added = updated = 0
+        missing: list[str] = []
+        for collection in _element_collections(context.scene):
+            data = _element_snapshot(collection, settings)
+            if kinds.renders_art(data.kind) or not data.path:
+                continue
+            png = root / "GUI2D" / f"{data.path}.png"
+            if not png.is_file():
+                missing.append(data.path)
+                continue
+            image = bpy.data.images.load(str(png), check_existing=True)
+            image.reload()  # pick up art replaced on disk since the last run
+            if not image.size[0] or not image.size[1]:
+                missing.append(data.path)
+                continue
+            was_new = _refresh_reference_image(collection, data, settings, image)
+            added += was_new
+            updated += not was_new
+
+        if not added and not updated and not missing:
+            self.report({"INFO"}, "no SDK-supplied elements in the scene")
+            return {"FINISHED"}
+        summary = f"{added} reference image(s) added, {updated} refreshed"
+        if missing:
+            self.report(
+                {"WARNING"},
+                summary + f"; no usable PNG in GUI2D for: {', '.join(missing)}"
+                          " — Install SDK Parts provides the stock art",
+            )
+        else:
+            self.report({"INFO"}, summary)
+        return {"FINISHED"}
+
+
 CLASSES = (
     REBLEND_OT_import_project,
     REBLEND_OT_validate,
@@ -2761,4 +2909,5 @@ CLASSES = (
     REBLEND_OT_flipbook,
     REBLEND_OT_launch_tool,
     REBLEND_OT_install_sdk_parts,
+    REBLEND_OT_reference_images,
 )
