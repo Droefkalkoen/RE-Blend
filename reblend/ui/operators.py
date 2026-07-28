@@ -2812,8 +2812,14 @@ def _refresh_reference_image(collection, data: schema.ElementData, settings,
         else:
             cx, cy = (placement.x + iw / 2.0, placement.y + ih / 2.0)
         origin = _origin_offset(settings, placement.panel)
-        obj.location = Vector(
+        world = Vector(
             calibration.panel_px_to_world(cx, cy, settings.ppb, origin))
+        # The camera axis is free: panel-pixel math only uses X/Z, so a user
+        # depth offset (e.g. pulling the image in front of the backdrop to
+        # avoid z-fighting) is theirs to keep across refreshes. New empties
+        # start on the panel plane.
+        world.y = obj.location.y
+        obj.location = world
     return created
 
 
