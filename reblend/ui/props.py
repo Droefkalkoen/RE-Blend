@@ -41,12 +41,37 @@ class REBLEND_PG_finding(bpy.types.PropertyGroup):
     panel: bpy.props.StringProperty()
 
 
+#: Dynamic enum item tuples must outlive the callback (Blender keeps only a
+#: pointer to the strings), so both sets live at module level.
+_RESOLUTION_ITEMS = (
+    ("THEIRS", "Theirs", "Take the value from the project's Lua files"),
+    ("MINE", "Mine", "Keep the scene's value (export writes it back)"),
+)
+_RESOLUTION_ITEMS_REMOVED = (
+    ("MINE", "Keep", "Keep the element in the scene — it stays flagged until "
+                     "its node returns to the Lua or you delete it"),
+    ("DELETE", "Delete", "Remove the element from the scene: its collection, "
+                         "objects, registration empty, guide boxes, driver "
+                         "and state keyframes. The Lua files and any rendered "
+                         "PNG on disk are not touched"),
+)
+
+
+def _resolution_items(self, _context):
+    from ..project import merge  # local: keep module import light at register
+
+    if self.status == merge.REMOVED:
+        return _RESOLUTION_ITEMS_REMOVED
+    return _RESOLUTION_ITEMS
+
+
 class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
     """One row of the last Sync diff (mirrors merge.MergeItem).
 
-    ``resolution`` is the per-item accept-theirs/keep-mine choice (§6.1);
-    removed items are flag-only (never auto-deleted), so the resolution is
-    ignored for them.
+    ``resolution`` is the per-item choice (§6.1): accept-theirs/keep-mine for
+    added and changed items; keep-or-delete for removed items. Removed
+    elements are never deleted automatically — Delete is an explicit choice
+    Apply Resolutions confirms before acting on.
     """
 
     path: bpy.props.StringProperty()
@@ -54,11 +79,7 @@ class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
     summary: bpy.props.StringProperty()
     resolution: bpy.props.EnumProperty(
         name="Resolution",
-        items=(
-            ("THEIRS", "Theirs", "Take the value from the project's Lua files"),
-            ("MINE", "Mine", "Keep the scene's value (export writes it back)"),
-        ),
-        default="THEIRS",
+        items=_resolution_items,
     )
 
 
@@ -215,10 +236,49 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
     findings_index: bpy.props.IntProperty(default=0)
     merge_items: bpy.props.CollectionProperty(type=REBLEND_PG_merge_item)
     merge_index: bpy.props.IntProperty(default=0)
+    #: What filled ``findings`` and when — validate and the render queue share
+    #: the store, so the panel (and a saved report) must say which one it was.
+    findings_source: bpy.props.StringProperty(default="")
+    findings_time: bpy.props.StringProperty(default="")
+    sync_time: bpy.props.StringProperty(default="")
+    # Live frame-size editing (§5.2): these mirror the active element's
+    # re_frame_w/h. Raw IDProperties cannot carry update callbacks, so the
+    # Active Element panel edits these proxies instead; the update writes
+    # through and refreshes the guide boxes, making the bounds track a drag
+    # live in the viewport.
+    active_frame_w: bpy.props.IntProperty(
+        name="Frame W",
+        description="Active element's per-frame width in pixels — the guide "
+                    "boxes follow while you drag",
+        min=0,
+        update=lambda self, context: _push_active_frame_size(context),
+    )
+    active_frame_h: bpy.props.IntProperty(
+        name="Frame H",
+        description="Active element's per-frame height in pixels — the guide "
+                    "boxes follow while you drag",
+        min=0,
+        update=lambda self, context: _push_active_frame_size(context),
+    )
 
 
-def store_report(settings: REBLEND_PG_settings, findings) -> None:
+def _push_active_frame_size(context) -> None:
+    from . import operators  # local: operators imports props at module load
+
+    operators.apply_active_frame_size(context)
+
+
+def _timestamp() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def store_report(settings: REBLEND_PG_settings, findings,
+                 source: str = "validation") -> None:
     settings.findings.clear()
+    settings.findings_source = source
+    settings.findings_time = _timestamp()
     for finding in findings:
         row = settings.findings.add()
         row.severity = finding.severity
@@ -239,6 +299,7 @@ def store_merge_items(settings: REBLEND_PG_settings, items) -> None:
     kept = {(row.path, row.status): row.resolution
             for row in settings.merge_items}
     settings.merge_items.clear()
+    settings.sync_time = _timestamp()
     for item in items:
         row = settings.merge_items.add()
         row.path = item.path

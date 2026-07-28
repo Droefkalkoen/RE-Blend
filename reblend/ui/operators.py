@@ -19,8 +19,9 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
+from .. import __version__
 from ..model import calibration, kinds, rigs, schema, state_tables
-from ..project import lua_writer, merge, sdk_parts, validation
+from ..project import lua_writer, merge, reporting, sdk_parts, validation
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
 from ..project.lua_writer import PatchError
@@ -59,12 +60,34 @@ def _project_root(context) -> Path:
     return Path(bpy.path.abspath(raw))
 
 
-def _element_collections() -> list[bpy.types.Collection]:
-    return [c for c in bpy.data.collections if schema.is_element(c)]
+def _element_collections(scene) -> list[bpy.types.Collection]:
+    """Every RE Element collection linked under the scene, once each.
+
+    Scene-scoped on purpose, matching the render queue's traversal
+    (:func:`reblend.render.renderer._element_collections`): a collection the
+    user deleted in the Outliner is only *unlinked* — it survives in
+    ``bpy.data`` until the file is saved — and enumerating ``bpy.data`` kept
+    such ghosts listing, validating and rendering. A multi-panel element is
+    linked under several panel roots but appears here once.
+    """
+    found: list[bpy.types.Collection] = []
+    seen: set[str] = set()
+
+    def walk(collection):
+        for child in collection.children:
+            if child.name in seen:
+                continue
+            seen.add(child.name)
+            if schema.is_element(child):
+                found.append(child)
+            walk(child)
+
+    walk(scene.collection)
+    return found
 
 
-def _collection_by_path(path: str) -> bpy.types.Collection | None:
-    for collection in _element_collections():
+def _collection_by_path(scene, path: str) -> bpy.types.Collection | None:
+    for collection in _element_collections(scene):
         if str(collection.get("re_path", "")) == path:
             return collection
     return None
@@ -94,7 +117,7 @@ def _origin_offset(settings, panel: str) -> tuple[float, float]:
 
 def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool:
     """Create or update one element collection from a spec; True when new."""
-    collection = _collection_by_path(spec.path)
+    collection = _collection_by_path(context.scene, spec.path)
     is_new = collection is None
     if is_new:
         collection = bpy.data.collections.new(spec.path)
@@ -124,7 +147,7 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
 
     if is_new:
         _registration_empty(collection, spec, settings)
-        _guide_boxes(collection, spec, settings)
+        _refresh_guide_boxes(collection, settings)
     elif reposition:
         _reposition(collection, spec, settings)
     return is_new
@@ -158,8 +181,7 @@ def _reposition(collection, spec: ElementSpec, settings) -> None:
             _translate_element(collection, delta)
         else:
             _set_world_location(empty, target)
-    _clear_guide_boxes(collection)
-    _guide_boxes(collection, spec, settings)
+    _refresh_guide_boxes(collection, settings)
 
 
 def _translate_element(collection, delta: Vector) -> None:
@@ -214,21 +236,49 @@ def _registration_empty(collection, spec: ElementSpec, settings) -> None:
     collection["re_registration"] = empty.name
 
 
-def _guide_boxes(collection, spec: ElementSpec, settings) -> None:
-    """Wireframe rects at each declared placement — never rendered."""
-    if not (spec.frame_w and spec.frame_h):
-        return
-    for index, placement in enumerate(spec.placements):
+def _refresh_guide_boxes(collection, settings) -> None:
+    """Fit the element's guide-box wireframes (never rendered) to its current
+    properties.
+
+    Placement *and* frame size are read back from the element through the
+    same snapshot every scene/project comparison uses, so the boxes follow a
+    dragged registration empty and a live Frame W/H edit alike. Existing box
+    meshes are resized in place — the same 4-vertex-ring rewrite the panel
+    guides use — so dragging a number field updates the viewport without
+    churning datablocks; boxes are created or removed only when the placement
+    count or sized-ness changes.
+    """
+    data = _element_snapshot(collection, settings)
+    placements = data.effective_placements if data.has_frame_size else ()
+
+    boxes = sorted(
+        (o for o in collection.objects if o.get("re_guide") == "box"),
+        key=lambda o: o.name,
+    )
+    for surplus in boxes[len(placements):]:
+        mesh = surplus.data
+        bpy.data.objects.remove(surplus, do_unlink=True)
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    boxes = boxes[:len(placements)]
+
+    for index, placement in enumerate(placements):
         origin = _origin_offset(settings, placement.panel)
         corners_px = (
             (placement.x, placement.y),
-            (placement.x + spec.frame_w, placement.y),
-            (placement.x + spec.frame_w, placement.y + spec.frame_h),
-            (placement.x, placement.y + spec.frame_h),
+            (placement.x + data.frame_w, placement.y),
+            (placement.x + data.frame_w, placement.y + data.frame_h),
+            (placement.x, placement.y + data.frame_h),
         )
         verts = [calibration.panel_px_to_world(x, y, settings.ppb, origin)
                  for x, y in corners_px]
-        mesh = bpy.data.meshes.new(f"box_{spec.path}_{index}")
+        if index < len(boxes):
+            mesh = boxes[index].data
+            for vert, co in zip(mesh.vertices, verts):
+                vert.co = co
+            mesh.update()
+            continue
+        mesh = bpy.data.meshes.new(f"box_{data.path}_{index}")
         mesh.from_pydata(verts, [(0, 1), (1, 2), (2, 3), (3, 0)], [])
         obj = bpy.data.objects.new(mesh.name, mesh)
         obj.display_type = "WIRE"
@@ -236,6 +286,26 @@ def _guide_boxes(collection, spec: ElementSpec, settings) -> None:
         obj.hide_select = True
         obj["re_guide"] = "box"
         collection.objects.link(obj)
+
+
+def apply_active_frame_size(context) -> None:
+    """Write the panel's live Frame W/H proxies onto the active element and
+    refit its guide boxes — the update callback behind the interactive bounds
+    (§5.2). Blender fires property updates continuously during a drag, so the
+    wireframe tracks the value in the viewport as it changes.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    settings = _settings(context)
+    w, h = int(settings.active_frame_w), int(settings.active_frame_h)
+    current = (int(collection.get("re_frame_w", 0)),
+               int(collection.get("re_frame_h", 0)))
+    if current == (w, h):
+        return
+    collection["re_frame_w"] = w
+    collection["re_frame_h"] = h
+    _refresh_guide_boxes(collection, settings)
 
 
 def _clear_guide_boxes(collection) -> None:
@@ -246,6 +316,77 @@ def _clear_guide_boxes(collection) -> None:
         bpy.data.objects.remove(obj, do_unlink=True)
         if mesh is not None and mesh.users == 0:
             bpy.data.meshes.remove(mesh)
+
+
+def _delete_element(context, collection) -> list[str]:
+    """Remove one RE Element and every trace RE-Blend created for it (§6.1).
+
+    This is what an Outliner delete cannot do: the add-on's records name the
+    registration empty, mark the guide boxes, and enumerate the state-table
+    channels — which may key datablocks *outside* the collection — so only
+    this sweep can find all of it. The project's files are never touched: the
+    Lua stays the user's, and a rendered ``GUI2D/<path>.png`` is only noted.
+    Returns human-readable notes of what was swept, for the operator report.
+    """
+    notes: list[str] = []
+    data = schema.props_to_data(collection)
+
+    raw = str(collection.get("re_states", ""))
+    if raw:
+        try:
+            table = state_tables.StateTable.from_json(raw)
+        except ValueError:
+            notes.append("state table JSON unreadable — keyframes not swept")
+        else:
+            cleared = rigs.clear_state_table(table)
+            if cleared:
+                notes.append(f"removed {cleared} state f-curve(s)")
+
+    # Which object spins is the one thing the properties don't record (§4.3),
+    # so sweep the collection's own objects — where Generate Rig drives.
+    if kinds.rig_for_kind(data.kind) == kinds.RIG_DRIVER:
+        drivers = 0
+        for obj in list(collection.objects):
+            with contextlib.suppress(RuntimeError, TypeError):
+                drivers += bool(rigs.clear_turntable_driver(obj))
+        if drivers:
+            notes.append(f"cleared {drivers} turntable driver(s)")
+
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is not None:
+        bpy.data.objects.remove(empty, do_unlink=True)
+        notes.append(f"removed registration empty '{data.path}'")
+
+    _clear_guide_boxes(collection)
+
+    removed = shared = 0
+    for obj in list(collection.objects):
+        if len(obj.users_collection) > 1:
+            shared += 1     # also lives elsewhere — unlink only, via the
+            continue        # collection removal below
+        block = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        removed += 1
+        if block is not None and block.users == 0:
+            bpy.data.batch_remove([block])
+    if removed:
+        notes.append(f"removed {removed} object(s)")
+    if shared:
+        notes.append(f"kept {shared} object(s) linked in other collections")
+
+    context_name = f"{collection.name} context"
+    if bpy.data.collections.get(context_name) is not None:
+        notes.append(f"kept '{context_name}' (user content)")
+
+    bpy.data.collections.remove(collection)
+
+    try:
+        png = _project_root(context) / "GUI2D" / f"{data.path}.png"
+    except LuaConfigError:
+        png = None
+    if png is not None and png.is_file():
+        notes.append(f"rendered sheet kept on disk: GUI2D/{png.name}")
+    return notes
 
 
 def _panel_guides(context, link: ProjectLink, settings, reposition: bool) -> None:
@@ -340,7 +481,7 @@ class REBLEND_OT_import_project(bpy.types.Operator):
             link = load_project(_project_root(context))
         except LuaConfigError:
             return []   # execute() will report the same failure properly
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         lines: list[str] = []
         moved_paths: set[str] = set()
         for element in elements:
@@ -393,12 +534,13 @@ class REBLEND_OT_validate(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
         report = validation.validate_link(link, elements, scene_info)
-        props.store_report(_settings(context), report.findings)
+        props.store_report(_settings(context), report.findings,
+                           source="validation")
 
         if report.ok and not report.warnings:
             self.report({"INFO"}, "validation clean: no errors, no warnings")
@@ -450,12 +592,13 @@ class REBLEND_OT_set_frame_size(bpy.types.Operator):
                 return {"CANCELLED"}
             targets = [active]
         else:
-            targets = [c for c in _element_collections()
+            targets = [c for c in _element_collections(context.scene)
                        if not schema.props_to_data(c).has_frame_size]
 
         for collection in targets:
             collection["re_frame_w"] = w
             collection["re_frame_h"] = h
+            _refresh_guide_boxes(collection, settings)
 
         if not targets:
             self.report({"INFO"}, "no elements needed a frame size")
@@ -568,7 +711,7 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
                 return {"CANCELLED"}
             collections = [active]
         else:
-            collections = _element_collections()
+            collections = _element_collections(context.scene)
         if not collections:
             self.report({"ERROR"}, "no RE Elements in the scene — import the project first")
             return {"CANCELLED"}
@@ -580,7 +723,7 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
             view_axis=calibration.axis_vector(settings.camera_axis),
         )
         findings = [f for result in results for f in result.findings]
-        props.store_report(settings, findings)
+        props.store_report(settings, findings, source="render")
 
         failed = [r.element for r in results if not r.ok]
         warnings = sum(1 for f in findings if f.severity != validation.ERROR)
@@ -716,7 +859,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
         rigged = skipped = pruned = 0
         problems: list[str] = []
 
-        for collection in _element_collections():
+        for collection in _element_collections(context.scene):
             data = schema.props_to_data(collection)
             rig = kinds.rig_for_kind(data.kind)
             if rig is None:
@@ -897,7 +1040,7 @@ def _seed_state_target(operator, context) -> None:
                            if collection is not None else "")
         if not operator.value_name:
             operator.value_name = state_tables.generate_value_name(
-                _taken_value_names())
+                _taken_value_names(context.scene))
         return
     operator.target = obj.name if obj is not None else ""
     if operator.action == "SHAPE_KEY" and obj is not None:
@@ -919,7 +1062,7 @@ def _guess_emission_node(material) -> str:
     return "Emission"
 
 
-def _taken_value_names() -> set[str]:
+def _taken_value_names(scene) -> set[str]:
     """Every driver-value name any element's table already uses.
 
     Names are only unique per owning object, but making them unique across the
@@ -927,7 +1070,7 @@ def _taken_value_names() -> set[str]:
     values on their own empties.
     """
     taken: set[str] = set()
-    for collection in _element_collections():
+    for collection in _element_collections(scene):
         raw = str(collection.get("re_states", ""))
         if not raw:
             continue
@@ -1622,8 +1765,9 @@ def _element_snapshot(collection, settings) -> schema.ElementData:
     return data
 
 
-def _scene_elements(settings) -> list[schema.ElementData]:
-    return [_element_snapshot(c, settings) for c in _element_collections()]
+def _scene_elements(context) -> list[schema.ElementData]:
+    return [_element_snapshot(c, _settings(context))
+            for c in _element_collections(context.scene)]
 
 
 class REBLEND_OT_export_patch(bpy.types.Operator):
@@ -1687,7 +1831,7 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
         except LuaConfigError as exc:
             self.report({"ERROR"}, str(exc))
             return None
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         edits, notes = lua_writer.compute_device_edits(link.device, elements)
         return link, edits, notes
 
@@ -1702,7 +1846,7 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
             return {"CANCELLED"}
         link, edits, notes = plan
         snapshots = [(c, _element_snapshot(c, settings))
-                     for c in _element_collections()]
+                     for c in _element_collections(context.scene)]
 
         for note in notes:
             print(f"[RE-Blend] export: {note}")
@@ -1767,7 +1911,7 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         items = merge.diff_link(link.specs, elements)
         props.store_merge_items(_settings(context), items)
 
@@ -1791,12 +1935,57 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
     Accept-theirs materialises new elements and snaps changed ones onto the
     file's values through the same path a full import uses; keep-mine leaves
     the scene's value in place (patch-mode export writes it back). Removed
-    nodes stay flagged — never auto-deleted.
+    nodes are never deleted automatically — an item the designer resolved as
+    Delete is swept only after a dialog names it.
     """
 
     bl_idname = "reblend.apply_sync"
     bl_label = "Apply Resolutions"
     bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        """Confirm before honouring any Delete resolutions.
+
+        Accept/keep are cheap to reverse; deleting a collection, its objects
+        and its rig is not. Naming every element about to go keeps "which ones
+        did that remove?" a question answered before the sweep, not after.
+        """
+        doomed = self._deletions(context)
+        if not doomed:
+            return self.execute(context)
+        self._doomed = doomed
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        doomed = getattr(self, "_doomed", [])
+        col.label(text=f"Delete {len(doomed)} element(s) from the scene:",
+                  icon="TRASH")
+        box = col.box().column(align=True)
+        for path in doomed[:10]:
+            box.label(text=path)
+        if len(doomed) > 10:
+            box.label(text=f"…and {len(doomed) - 10} more")
+        col.label(text="Removes their collections, objects, registration")
+        col.label(text="empties, guide boxes and rigs. The Lua files and")
+        col.label(text="rendered PNGs on disk are not touched.")
+
+    def _deletions(self, context) -> list[str]:
+        """Removed items currently resolved as Delete (fresh diff, so a node
+        that returned to the Lua since the stored Sync is never swept)."""
+        try:
+            link = load_project(_project_root(context))
+        except LuaConfigError:
+            return []   # execute() will report the same failure properly
+        current = {item.path: item
+                   for item in merge.diff_link(link.specs, _scene_elements(context))}
+        doomed = []
+        for row in _settings(context).merge_items:
+            item = current.get(row.path)
+            if (row.status == merge.REMOVED and row.resolution == "DELETE"
+                    and item is not None and item.status == merge.REMOVED):
+                doomed.append(row.path)
+        return doomed
 
     def execute(self, context):
         settings = _settings(context)
@@ -1806,17 +1995,24 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         items = {item.path: item for item in merge.diff_link(link.specs, elements)}
 
-        accepted = kept = flagged = 0
+        accepted = kept = flagged = deleted = 0
         rig_stale: list[str] = []
         for row in settings.merge_items:
             item = items.get(row.path)
             if item is None:
                 continue  # resolved since the diff was stored
             if item.status == merge.REMOVED:
-                flagged += 1
+                if row.status == merge.REMOVED and row.resolution == "DELETE":
+                    collection = _collection_by_path(context.scene, row.path)
+                    if collection is not None:
+                        for note in _delete_element(context, collection):
+                            print(f"[RE-Blend] deleted {row.path}: {note}")
+                    deleted += 1
+                else:
+                    flagged += 1
                 continue
             if row.resolution != "THEIRS":
                 kept += 1
@@ -1831,18 +2027,272 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
                 rig_stale.append(item.path)
             accepted += 1
 
-        elements = _scene_elements(_settings(context))
+        elements = _scene_elements(context)
         props.store_merge_items(settings, merge.diff_link(link.specs, elements))
 
         parts = [f"accepted {accepted} from Lua", f"kept {kept} scene value(s)"]
+        if deleted:
+            parts.append(f"deleted {deleted} removed element(s)")
         if flagged:
-            parts.append(f"{flagged} removed node(s) stay flagged, not deleted")
+            parts.append(f"{flagged} removed node(s) kept — resolve as "
+                         "Delete to remove them")
         if rig_stale:
             # The rig still encodes the old frame count (§4.3) — art and Lua
             # agree again, but the driver/keyframes must be rebuilt.
             parts.append("frame count changed, re-run Generate Rig for: "
                          + ", ".join(sorted(rig_stale)))
         self.report({"WARNING"} if rig_stale else {"INFO"}, "; ".join(parts))
+        return {"FINISHED"}
+
+
+class REBLEND_OT_delete_element(bpy.types.Operator):
+    """Delete one RE Element and everything RE-Blend created for it (§6.1).
+
+    An Outliner delete cannot reach the whole element: the registration
+    empty, guide boxes, knob driver and state keyframes (which may key
+    datablocks outside the collection) are only findable through the
+    element's own records. This confirms, then sweeps all of it. The Lua
+    files and any rendered PNG on disk are never touched.
+    """
+
+    bl_idname = "reblend.delete_element"
+    bl_label = "Delete RE Element"
+    bl_options = {"REGISTER", "UNDO"}
+
+    path: bpy.props.StringProperty(
+        name="Sprite Path",
+        description="The re_path of the element to delete",
+    )
+
+    def invoke(self, context, event):
+        if _collection_by_path(context.scene, self.path) is None:
+            self.report({"ERROR"}, f"no RE Element '{self.path}' in the scene")
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.label(text=f"Delete element '{self.path}' from the scene?",
+                  icon="TRASH")
+        col.label(text="Removes its collection, objects, registration empty,")
+        col.label(text="guide boxes, driver and state keyframes. The Lua")
+        col.label(text="files and rendered PNGs on disk are not touched.")
+
+    def execute(self, context):
+        collection = _collection_by_path(context.scene, self.path)
+        if collection is None:
+            self.report({"ERROR"}, f"no RE Element '{self.path}' in the scene")
+            return {"CANCELLED"}
+        notes = _delete_element(context, collection)
+        summary = "; ".join(notes) if notes else "nothing else to sweep"
+        self.report({"INFO"}, f"deleted '{self.path}' — {summary}")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_purge_removed(bpy.types.Operator):
+    """Delete every element whose node is gone from the Lua, in one pass (§6.1).
+
+    The bulk form of resolving removed Sync items as Delete: re-reads the
+    project, finds every scene element no longer named in device_2D.lua,
+    confirms the full list, then sweeps each one the same way Delete RE
+    Element does. Elements not yet exported (no node *yet*) look identical to
+    removed ones, so check the list before confirming.
+    """
+
+    bl_idname = "reblend.purge_removed"
+    bl_label = "Clean Up Removed Elements"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _removed_paths(self, context) -> list[str] | None:
+        try:
+            link = load_project(_project_root(context))
+        except LuaConfigError as exc:
+            self.report({"ERROR"}, str(exc))
+            return None
+        return [item.path
+                for item in merge.diff_link(link.specs, _scene_elements(context))
+                if item.status == merge.REMOVED]
+
+    def invoke(self, context, event):
+        removed = self._removed_paths(context)
+        if removed is None:
+            return {"CANCELLED"}
+        if not removed:
+            self.report({"INFO"}, "every element still has its node in the Lua")
+            return {"FINISHED"}
+        self._doomed = removed
+        return context.window_manager.invoke_props_dialog(self, width=460)
+
+    def draw(self, context):
+        col = self.layout.column()
+        doomed = getattr(self, "_doomed", [])
+        col.label(text=f"Delete {len(doomed)} element(s) with no Lua node:",
+                  icon="TRASH")
+        box = col.box().column(align=True)
+        for path in doomed[:10]:
+            box.label(text=path)
+        if len(doomed) > 10:
+            box.label(text=f"…and {len(doomed) - 10} more")
+        col.label(text="Removes their collections, objects, registration")
+        col.label(text="empties, guide boxes and rigs. The Lua files and")
+        col.label(text="rendered PNGs on disk are not touched.")
+
+    def execute(self, context):
+        removed = self._removed_paths(context)
+        if removed is None:
+            return {"CANCELLED"}
+        deleted = 0
+        for path in removed:
+            collection = _collection_by_path(context.scene, path)
+            if collection is None:
+                continue
+            for note in _delete_element(context, collection):
+                print(f"[RE-Blend] deleted {path}: {note}")
+            deleted += 1
+        # Keep the stored Sync list honest: the swept items must not linger
+        # as resolvable rows pointing at elements that no longer exist.
+        settings = _settings(context)
+        if len(settings.merge_items):
+            try:
+                link = load_project(_project_root(context))
+                props.store_merge_items(
+                    settings, merge.diff_link(link.specs, _scene_elements(context)))
+            except LuaConfigError:
+                pass
+        self.report({"INFO"}, f"deleted {deleted} removed element(s)")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_select_element(bpy.types.Operator):
+    """Make an element the active collection and select its objects (§6.3).
+
+    The jump from a validation finding or a list row to the thing itself:
+    sets the element's collection active (so the Active Element panel and
+    ACTIVE-scoped operators point at it) and selects its selectable objects,
+    with the registration empty as the active object when it exists.
+    """
+
+    bl_idname = "reblend.select_element"
+    bl_label = "Select Element"
+
+    path: bpy.props.StringProperty(
+        name="Sprite Path",
+        description="The re_path of the element to select",
+    )
+
+    def execute(self, context):
+        collection = _collection_by_path(context.scene, self.path)
+        if collection is None:
+            self.report({"ERROR"}, f"no RE Element '{self.path}' in the scene")
+            return {"CANCELLED"}
+
+        layer = _find_layer_collection(context.view_layer.layer_collection,
+                                       collection)
+        if layer is not None:
+            context.view_layer.active_layer_collection = layer
+
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in collection.all_objects:
+            with contextlib.suppress(RuntimeError):
+                obj.select_set(True)
+        empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+        if empty is not None:
+            context.view_layer.objects.active = empty
+        return {"FINISHED"}
+
+
+def _find_layer_collection(layer, collection):
+    """The view layer's wrapper for ``collection`` (first hit), or None."""
+    if layer.collection == collection:
+        return layer
+    for child in layer.children:
+        found = _find_layer_collection(child, collection)
+        if found is not None:
+            return found
+    return None
+
+
+class REBLEND_OT_save_report(bpy.types.Operator):
+    """Save the last validation/render report or Sync diff to a file (§6.3).
+
+    The panels show these transiently and each run overwrites the last; this
+    writes the same rows out as a dated text log (or JSON for diffing in
+    review) so a validation state can be kept, shared, or attached to a bug.
+    """
+
+    bl_idname = "reblend.save_report"
+    bl_label = "Save Report"
+
+    source: bpy.props.EnumProperty(
+        name="Source",
+        items=(
+            ("FINDINGS", "Validation / Render Report",
+             "The findings list shown in the Validation Report panel"),
+            ("SYNC", "Sync Log",
+             "The last Sync diff with its per-item resolutions"),
+        ),
+        default="FINDINGS",
+    )
+    fmt: bpy.props.EnumProperty(
+        name="Format",
+        items=(
+            ("TEXT", "Text", "Readable log (.txt)"),
+            ("JSON", "JSON", "Structured document (.json), diffable in review"),
+        ),
+        default="TEXT",
+    )
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.txt;*.json",
+                                          options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        settings = _settings(context)
+        if self.source == "SYNC" and not len(settings.merge_items):
+            self.report({"ERROR"}, "no Sync diff recorded — run Sync first")
+            return {"CANCELLED"}
+        if self.source == "FINDINGS" and not len(settings.findings):
+            self.report({"ERROR"}, "no report recorded — run Validate first")
+            return {"CANCELLED"}
+        if not self.filepath:
+            stem = ("reblend-sync" if self.source == "SYNC"
+                    else f"reblend-{settings.findings_source or 'validation'}")
+            ext = "json" if self.fmt == "JSON" else "txt"
+            from datetime import datetime
+            self.filepath = f"//{stem}-{datetime.now():%Y%m%d}.{ext}"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        settings = _settings(context)
+        try:
+            root = str(_project_root(context))
+        except LuaConfigError:
+            root = settings.project_root
+        if self.source == "SYNC":
+            rows, timestamp = settings.merge_items, settings.sync_time
+            render = (reporting.merge_json if self.fmt == "JSON"
+                      else reporting.format_merge)
+            content = render(rows, project_root=root,
+                             addon_version=__version__, timestamp=timestamp)
+        else:
+            rows, timestamp = settings.findings, settings.findings_time
+            render = (reporting.findings_json if self.fmt == "JSON"
+                      else reporting.format_findings)
+            content = render(rows, kind=settings.findings_source or "validation",
+                             project_root=root, addon_version=__version__,
+                             timestamp=timestamp)
+        if not rows:
+            self.report({"ERROR"}, "nothing recorded to save")
+            return {"CANCELLED"}
+
+        path = Path(bpy.path.abspath(self.filepath))
+        try:
+            path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            self.report({"ERROR"}, f"could not write {path}: {exc}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"saved to {path}")
         return {"FINISHED"}
 
 
@@ -1931,7 +2381,7 @@ class REBLEND_OT_preview_panel(bpy.types.Operator):
             return {"CANCELLED"}
 
         entries, skipped = [], []
-        for collection in _element_collections():
+        for collection in _element_collections(context.scene):
             data = schema.props_to_data(collection)
             placements = [p for p in data.placements if p.panel == panel]
             if not placements:
@@ -2236,6 +2686,10 @@ CLASSES = (
     REBLEND_OT_export_patch,
     REBLEND_OT_sync_project,
     REBLEND_OT_apply_sync,
+    REBLEND_OT_delete_element,
+    REBLEND_OT_purge_removed,
+    REBLEND_OT_select_element,
+    REBLEND_OT_save_report,
     REBLEND_OT_preview_panel,
     REBLEND_OT_contact_sheet,
     REBLEND_OT_flipbook,

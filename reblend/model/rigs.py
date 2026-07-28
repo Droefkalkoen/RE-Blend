@@ -27,6 +27,7 @@ __all__ = [
     "ensure_turntable_driver",
     "clear_turntable_driver",
     "apply_state_table",
+    "clear_state_table",
     "read_channel_value",
 ]
 
@@ -60,8 +61,9 @@ def ensure_turntable_driver(
     )
 
 
-def clear_turntable_driver(rotor: "bpy.types.Object") -> None:
-    rotor.driver_remove("rotation_euler")
+def clear_turntable_driver(rotor: "bpy.types.Object") -> bool:
+    """Remove the knob rotation driver; True when one was actually there."""
+    return rotor.driver_remove("rotation_euler")
 
 
 def apply_state_table(table: state_tables.StateTable) -> int:
@@ -96,6 +98,51 @@ def apply_state_table(table: state_tables.StateTable) -> int:
         block, data_path = _hop_embedded(block, data_path)
         pruned += _finish_channel(block, data_path, index, table.frames)
     return pruned
+
+
+def clear_state_table(table: state_tables.StateTable) -> int:
+    """Remove the f-curves a state table owns — the inverse of
+    :func:`apply_state_table`, for deleting an element from the scene.
+
+    State channels can target datablocks *outside* the element's collection
+    (a shared material, a lamp object), so deleting the collection alone
+    strands their keyframes. Channels whose datablock or path is already gone
+    are skipped — a half-deleted element must still clean up the rest.
+    Returns how many f-curves were removed.
+    """
+    removed = 0
+    for id_type, target, data_path, index in table.channels():
+        try:
+            block = _resolve_block(id_type, target)
+            block, path = _hop_embedded(block, data_path)
+        except KeyError:
+            continue
+        anim = block.animation_data
+        if anim is None or anim.action is None:
+            continue
+        stale = [
+            fcurve for fcurve in _fcurves(anim.action)
+            if fcurve.data_path == path
+            and (index < 0 or fcurve.array_index == index)
+        ]
+        for fcurve in stale:
+            _remove_fcurve(anim.action, fcurve)
+        removed += len(stale)
+    return removed
+
+
+def _remove_fcurve(action, fcurve) -> None:
+    # Mirror of _fcurves: 4.2 LTS actions own their fcurves directly, 4.4+
+    # layered actions keep them on channelbags — remove from whichever holds it.
+    if getattr(action, "fcurves", None) is not None:
+        action.fcurves.remove(fcurve)
+        return
+    for layer in getattr(action, "layers", ()):
+        for strip in layer.strips:
+            for channelbag in strip.channelbags:
+                if fcurve in tuple(channelbag.fcurves):
+                    channelbag.fcurves.remove(fcurve)
+                    return
 
 
 def read_channel_value(channel: state_tables.Channel):

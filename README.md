@@ -53,7 +53,8 @@ RE-Blend's answer is to prevent these mismatches:
 - **Write changes back to Lua** *(landed, M2)*: placement offsets and frame counts,  via anchored
   patch edits that leave everything else in the file intact. If an edit is ambiguous, RE-Blend 
   refuses with an error. Re-running import against changed Lua becomes a merge: per-item 
-  accept-theirs / keep-mine, and removed nodes are flagged, never auto-deleted.
+  accept-theirs / keep-mine, and removed nodes are flagged — never deleted automatically, 
+  only by an explicit, confirmed per-item Delete or one-click cleanup.
 - **Preview and QA before the SDK** *(landed, M2)*: a full-panel composite of the rendered sheets 
   at their declared offsets with a per-element state playground, contact sheets and flipbook 
   playback for sweep smoothness, and one-click RE2DRender / RE2DPreview launch.

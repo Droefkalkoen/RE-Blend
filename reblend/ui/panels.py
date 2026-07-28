@@ -99,9 +99,20 @@ class REBLEND_PT_active(bpy.types.Panel):
                      icon=_KIND_ICONS.get(data.kind, "OUTLINER_COLLECTION"))
         layout.label(text=f"{data.kind} · node '{data.node}' · "
                           f"{data.frame_w}x{data.frame_h}px · {data.frames}f")
+        # Frame W/H are edited through scene-level proxies whose update
+        # callback writes through and refits the guide boxes, so the bounds
+        # track a drag live in the viewport (raw IDProperties cannot carry an
+        # update). Dict-style assignment resyncs the proxies when the active
+        # element changed without firing the update (or tripping the
+        # no-writes-in-draw rule).
+        settings = context.scene.reblend
+        if (settings.active_frame_w, settings.active_frame_h) != (
+                data.frame_w, data.frame_h):
+            settings["active_frame_w"] = data.frame_w
+            settings["active_frame_h"] = data.frame_h
         row = layout.row(align=True)
-        row.prop(active, '["re_frame_w"]', text="Frame W")
-        row.prop(active, '["re_frame_h"]', text="Frame H")
+        row.prop(settings, "active_frame_w", text="Frame W")
+        row.prop(settings, "active_frame_h", text="Frame H")
         if data.has_frame_size:
             layout.operator("reblend.scale_to_bounds", icon="FULLSCREEN_EXIT")
         row = layout.row(align=True)
@@ -230,9 +241,11 @@ class REBLEND_PT_elements(bpy.types.Panel):
     bl_order = 2
 
     def draw(self, context):
+        from . import operators  # local: panels are imported during registration
+
         layout = self.layout
         settings = context.scene.reblend
-        elements = [c for c in bpy.data.collections if schema.is_element(c)]
+        elements = operators._element_collections(context.scene)
         if not elements:
             layout.label(text="No elements — import a project", icon="INFO")
             return
@@ -240,17 +253,29 @@ class REBLEND_PT_elements(bpy.types.Panel):
         unsized = sum(
             1 for c in elements if not schema.props_to_data(c).has_frame_size
         )
+        # The last Sync knows which elements lost their Lua node; badge them
+        # here so an orphan is visible without opening the Sync panel.
+        removed_paths = {item.path for item in settings.merge_items
+                         if item.status == merge.REMOVED}
         active = _active_element(context)
         for collection in sorted(elements, key=lambda c: c.name):
             data = schema.props_to_data(collection)
             row = layout.row(align=True)
             row.label(text=data.path or collection.name,
                       icon=_KIND_ICONS.get(data.kind, "QUESTION"))
-            row.label(text=f"{data.kind} · {data.frames}f")
+            size = (f" · {data.frame_w}×{data.frame_h}"
+                    if data.has_frame_size else "")
+            row.label(text=f"{data.kind} · {data.frames}f{size}")
             if collection is active:
                 row.label(text="", icon="LAYER_ACTIVE")
+            if data.path in removed_paths:
+                row.label(text="", icon="UNLINKED")   # no node in the Lua
             if not data.has_frame_size:
                 row.label(text="", icon="ERROR")
+            row.operator("reblend.select_element", text="",
+                         icon="RESTRICT_SELECT_OFF").path = data.path
+            row.operator("reblend.delete_element", text="",
+                         icon="TRASH").path = data.path
 
         # Frame pixel size isn't in the RE Lua (§5.2), so fresh imports land
         # unsized. Offer a bulk fill so the designer isn't hand-editing dozens
@@ -277,7 +302,8 @@ _STATUS_ICONS = {
 class REBLEND_PT_sync(bpy.types.Panel):
     """Two-way sync (M2): patch-mode export and the re-import merge (§6.1,
     §6.2). The merge list carries per-item accept-theirs/keep-mine; removed
-    nodes are flagged here, never auto-deleted."""
+    nodes are flagged here and deleted only when explicitly resolved as
+    Delete (or via Clean Up Removed Elements), never automatically."""
 
     bl_label = "Sync & Export"
     bl_space_type = "VIEW_3D"
@@ -314,11 +340,14 @@ class REBLEND_PT_sync(bpy.types.Panel):
             row = box.row(align=True)
             row.label(text=f"{item.path} · {item.status}",
                       icon=_STATUS_ICONS.get(item.status, "QUESTION"))
-            if item.status != merge.REMOVED:
-                row.prop(item, "resolution", text="")
+            row.prop(item, "resolution", text="")
             for line in _wrap(item.summary):
                 box.label(text=line)
         layout.operator("reblend.apply_sync", icon="CHECKMARK")
+        if any(item.status == merge.REMOVED for item in items):
+            layout.operator("reblend.purge_removed", icon="TRASH")
+        layout.operator("reblend.save_report", text="Save Sync Log…",
+                        icon="FILE_TICK").source = "SYNC"
 
 
 def _moved_elements(context) -> list[tuple[str, float, float]]:
@@ -326,7 +355,7 @@ def _moved_elements(context) -> list[tuple[str, float, float]]:
     from . import operators   # local: panels are imported during registration
 
     moved = []
-    for element in operators._scene_elements(context.scene.reblend):
+    for element in operators._scene_elements(context):
         for stored, derived in element.moved:
             moved.append((element.path, derived.x - stored.x, derived.y - stored.y))
     return moved
@@ -344,6 +373,8 @@ class REBLEND_PT_preview(bpy.types.Panel):
     bl_order = 4
 
     def draw(self, context):
+        from . import operators  # local: panels are imported during registration
+
         layout = self.layout
         settings = context.scene.reblend
         row = layout.row(align=True)
@@ -351,9 +382,7 @@ class REBLEND_PT_preview(bpy.types.Panel):
         row.operator("reblend.preview_panel", text="Preview", icon="RENDERLAYERS")
 
         playable = []
-        for collection in bpy.data.collections:
-            if not schema.is_element(collection):
-                continue
+        for collection in operators._element_collections(context.scene):
             data = schema.props_to_data(collection)
             if data.frames > 1 and any(
                 p.panel == settings.preview_panel for p in data.placements
@@ -391,11 +420,18 @@ class REBLEND_PT_validation(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        findings = context.scene.reblend.findings
+        settings = context.scene.reblend
+        findings = settings.findings
         if not findings:
             layout.label(text="No report yet — run Validate", icon="INFO")
             return
 
+        # Validate and the render queue share this store, overwriting each
+        # other — the header says which one produced what's on screen.
+        source = ("Render QA" if settings.findings_source == "render"
+                  else "Validation")
+        when = f" — {settings.findings_time}" if settings.findings_time else ""
+        layout.label(text=f"{source}{when}", icon="INFO")
         errors = sum(1 for f in findings if f.severity == "error")
         layout.label(
             text=f"{errors} error(s), {len(findings) - errors} warning(s)",
@@ -409,8 +445,14 @@ class REBLEND_PT_validation(bpy.types.Panel):
             icon = _SEVERITY_ICONS.get(severity, "QUESTION")
             if len(group) == 1:
                 finding = group[0]
-                box.label(text=f"{code}: {finding.subject or finding.panel}",
+                row = box.row(align=True)
+                row.label(text=f"{code}: {finding.subject or finding.panel}",
                           icon=icon)
+                if finding.subject:
+                    # Click-to-select (§6.3): jump from the finding to the
+                    # element it names, when one is in the scene to jump to.
+                    row.operator("reblend.select_element", text="",
+                                 icon="RESTRICT_SELECT_OFF").path = finding.subject
                 for line in _wrap(finding.message):
                     box.label(text=line)
                 continue
@@ -434,6 +476,9 @@ class REBLEND_PT_validation(bpy.types.Panel):
                     prefix = f"{who}: " if who else ""
                     for line in _wrap(f"{prefix}{finding.message}"):
                         box.label(text=line, icon="BLANK1")
+
+        layout.operator("reblend.save_report", text="Save Report…",
+                        icon="FILE_TICK").source = "FINDINGS"
 
 
 def _group_by_code(findings):

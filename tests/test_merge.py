@@ -29,7 +29,7 @@ def test_new_node_in_lua_is_added(project):
     assert "knob" in items[0].summary
 
 
-def test_scene_element_missing_from_lua_is_removed_flag_only(project):
+def test_scene_element_missing_from_lua_is_removed_not_auto_deleted(project):
     elements = scene_elements(project)
     elements.append(
         ElementData(node="old_knob", path="Old_Knob", kind="knob", frames=61,
@@ -37,7 +37,10 @@ def test_scene_element_missing_from_lua_is_removed_flag_only(project):
     )
     items = merge.diff_link(project.specs, elements)
     assert [(i.path, i.status) for i in items] == [("Old_Knob", merge.REMOVED)]
-    assert "kept" in items[0].summary  # flagged, never auto-deleted
+    # Flagged, never deleted automatically — removal is the designer's
+    # explicit choice, and the summary must say the element still exists.
+    assert "kept" in items[0].summary
+    assert "delete" in items[0].summary
 
 
 def test_changed_values_list_their_fields(project):
