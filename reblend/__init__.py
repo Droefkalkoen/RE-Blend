@@ -49,6 +49,8 @@ def _migrate_all() -> None:
 
     from .model import schema
 
+    # bpy.data, not a scene walk: migrations must reach every element in the
+    # file, including collections not linked under any scene.
     for collection in bpy.data.collections:
         if schema.is_element(collection):
             try:

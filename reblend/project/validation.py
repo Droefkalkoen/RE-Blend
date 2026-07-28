@@ -113,6 +113,7 @@ def validate_project(
     lua_graphics = list(_iter_graphics(device))
     lua_paths = {graphic.path for _, _, graphic in lua_graphics}
 
+    _check_duplicate_paths(report, elements)
     _check_art_coverage(report, lua_graphics, by_path, lua_paths, elements)
     _check_widget_links(report, device, hdgui)
     _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
@@ -147,6 +148,27 @@ def _iter_graphics(device: Device2D) -> Iterable[tuple[str, Node2D, Graphic]]:
             for node in root.walk():
                 for graphic in node.graphics:
                     yield panel, node, graphic
+
+
+def _check_duplicate_paths(
+    report: Report, elements: Sequence[schema.ElementData]
+) -> None:
+    """Two collections sharing one sprite path make every by-path lookup
+    ambiguous — duplicating a collection in Blender copies its ``re_*``
+    properties, and render/export/sync would each silently pick one copy."""
+    counts: dict[str, int] = {}
+    for element in elements:
+        if element.path:
+            counts[element.path] = counts.get(element.path, 0) + 1
+    for path in sorted(p for p, count in counts.items() if count > 1):
+        report.add(
+            WARNING,
+            "duplicate-path",
+            f"{counts[path]} RE Element collections share sprite path "
+            f"'{path}' — renders, sync and export silently use only one of "
+            "them; delete or re-path the copies",
+            subject=path,
+        )
 
 
 def _check_art_coverage(

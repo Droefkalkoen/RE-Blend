@@ -7,7 +7,9 @@ with the scene's current :class:`ElementData` snapshots and produce one
 :class:`MergeItem` per sprite path that differs —
 
 - **added**: in the Lua, not in the scene → import materialises it,
-- **removed**: in the scene, not in the Lua → flagged, never auto-deleted,
+- **removed**: in the scene, not in the Lua → flagged; never deleted
+  automatically, but the designer can resolve the item as an explicit,
+  confirmed delete (the Blender layer sweeps the element and its rig),
 - **changed**: both sides, values differ → per-item accept-theirs/keep-mine.
 
 "Keep mine" is meaningful because M2 also brings patch-mode export: keeping a
@@ -58,7 +60,7 @@ class MergeItem:
         if self.status == ADDED:
             return f"new in Lua: {self.spec.kind}, {self.spec.frames} frame(s)"
         if self.status == REMOVED:
-            return "no longer in Lua — element kept, flag only"
+            return "no longer in Lua — kept until you delete it"
         return "; ".join(str(change) for change in self.changes)
 
 

@@ -342,8 +342,11 @@ drift apart silently.
   HTML-mockup export) as a camera background mapped 1:1 to panel pixels.
 
 Re-running Import on a linked scene performs a **sync**: new nodes appear as new
-placeholder elements, removed nodes are flagged (not auto-deleted), and changed
-offsets/frames/sizes are listed with per-item *accept theirs / keep mine* resolution.
+placeholder elements, removed nodes are flagged (never deleted automatically — each
+can be resolved as *keep* or as an explicit, confirmed *delete* that also sweeps the
+element's registration empty, guide boxes and rig; a bulk "clean up removed elements"
+action deletes all of them after one confirmation), and changed offsets/frames/sizes
+are listed with per-item *accept theirs / keep mine* resolution.
 
 An element's registration empty **is** its position, so dragging one is a layout edit
 that lives only in the scene until an export writes it out. That drift is first-class:

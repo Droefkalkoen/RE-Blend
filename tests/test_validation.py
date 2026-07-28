@@ -111,6 +111,21 @@ def test_orphan_element_is_a_warning(project_dir):
     assert report.ok  # warning, not error
 
 
+def test_duplicate_sprite_paths_are_a_warning(project_dir):
+    # Duplicating a collection in Blender copies its re_* properties, and
+    # every by-path lookup (render, sync, export) then silently picks one
+    # copy — the designer must be told the path is ambiguous.
+    link, elements = make_scene(project_dir)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    elements.append(knob)
+    report = validate_link(link, elements)
+    duplicates = [f for f in report.warnings if f.code == "duplicate-path"]
+    assert len(duplicates) == 1
+    assert duplicates[0].subject == "Knob_65x65_61frames"
+    assert "2 RE Element collections" in duplicates[0].message
+    assert report.ok  # warning, not error
+
+
 def test_moved_registration_empty_is_reported(project_dir):
     link, elements = make_scene(project_dir)
     knob = next(e for e in elements if e.path == "Knob_65x65_61frames")

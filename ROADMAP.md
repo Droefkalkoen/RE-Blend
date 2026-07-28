@@ -91,7 +91,7 @@ patch-mode export (`project/lua_writer.py` — comment/string-aware anchored edi
 `offset`/`frames` literals, every ambiguity refused with the reason, and the patched text
 re-parsed and compared against the intended tree *before* the file is atomically replaced),
 re-import merge (`project/merge.py` diff + per-item accept-theirs/keep-mine in the Sync panel;
-removed nodes are flagged, never deleted), the panel compositor preview with the state
+removed nodes are flagged and deleted only via an explicit, confirmed resolution), the panel compositor preview with the state
 playground plus flipbook and contact sheet (`render/compositor.py` + operators), and one-click
 RE2DRender/RE2DPreview launch (paths live in per-machine add-on preferences, never in the
 repo). Write-path features are gated on interop fixtures in the test suite: the SDK-convention
