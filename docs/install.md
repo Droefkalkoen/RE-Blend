@@ -93,6 +93,43 @@ Then **Get Extensions ▸ ⌄ ▸ Install from Disk…** and pick `dist/reblend-
 the zip onto the Blender window). A zip built this way still needs `lupa` present on the target
 machine unless the wheel is bundled.
 
+## 3. Updating an existing install
+
+Pulling new commits does **not** update Blender on its own, and the failure is quiet: Blender goes
+on running the code it imported at startup, so a bug you already fixed keeps throwing the old
+traceback — with the old line numbers, which is the giveaway. If a traceback quotes a line of
+source that is no longer in your working copy, the install is stale, not the fix.
+
+What you have to do depends on how you installed:
+
+| Install mode | To update |
+| --- | --- |
+| Junction/symlink (2a) | `git pull` in the clone, then **restart Blender** |
+| Copied folder (2a, copy variant) | Recopy `reblend/` over `…\extensions\user_default\reblend`, then restart Blender |
+| Zip (2b) | Rebuild the zip, **Install from Disk…** it again, then restart Blender |
+
+If you don't remember which you used, ask the filesystem — a junction is labelled as one:
+
+```cmd
+dir "%APPDATA%\Blender Foundation\Blender\5.2\extensions\user_default"
+```
+
+A line reading `<JUNCTION>  reblend [C:\path\to\RE-Blend\reblend]` means a pull is all the file
+copying you need. `<DIR>` means it is a real copy and the files must be replaced.
+
+**Restart rather than reloading scripts.** Blender's **Reload Scripts** re-executes registered
+modules, but RE-Blend is a package whose submodules (`project/`, `model/`, `render/`, `ui/`) stay
+in `sys.modules`, so a reload can leave you running a mix of old and new. A restart is the only
+way to be sure which code is live.
+
+To confirm what Blender actually has, run this in **Scripting ▸ Python Console** — it prints the
+directory Blender imported RE-Blend from, so you can check you updated the folder Blender is
+really using:
+
+```python
+import reblend, pathlib; print(pathlib.Path(reblend.__file__).parent)
+```
+
 ## Bundling `lupa` (for a self-contained zip)
 
 To make the zip install without a manual `pip install`, vendor the platform wheel(s):
@@ -117,3 +154,8 @@ Wheels are intentionally not committed yet; until they are, use the step-1 manua
 - **Blender doesn't list the extension after linking** — confirm the linked folder is
   `…\extensions\user_default\reblend` and contains `blender_manifest.toml` beside `__init__.py`,
   then **Refresh Local**.
+- **A traceback quotes source you no longer have** — e.g. `Writing to ID classes in this context
+  is not allowed` from a `draw()` line that isn't in your working copy. The install is stale; see
+  *3. Updating an existing install*. Compare the traceback's file path against the directory the
+  Python-console check prints — a fix applied to a different copy of `reblend/` than the one
+  Blender imports changes nothing.
