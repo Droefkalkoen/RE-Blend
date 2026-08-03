@@ -28,6 +28,7 @@ __all__ = [
     "clear_turntable_driver",
     "apply_state_table",
     "clear_state_table",
+    "ensure_value_property",
     "read_channel_value",
 ]
 
@@ -143,6 +144,30 @@ def _remove_fcurve(action, fcurve) -> None:
                 if fcurve in tuple(channelbag.fcurves):
                     channelbag.fcurves.remove(fcurve)
                     return
+
+
+def ensure_value_property(target: str, name: str, value: float = 0.0) -> bool:
+    """Materialise a driver value's custom property now (§4.3).
+
+    :func:`apply_state_table` creates it too, but not until Generate Rig, and
+    that is too late to be the *only* time. A driver variable that evaluates
+    once against a property that is not there gets Blender's
+    ``DTAR_FLAG_INVALID`` stamped on its target, and only a **successful
+    evaluation** clears it — not the property appearing, not Update
+    Dependencies, not retargeting the variable at a name that does exist. The
+    path field stays red long after the wiring became correct, which reads as
+    "my driver is broken" when nothing is. Creating the property when the
+    action is *declared* closes the window in which a driver can be pointed at
+    something absent.
+
+    Returns True when it created the property, False when it was already there.
+    Raises :class:`KeyError` for an unknown object, same as applying a table.
+    """
+    block = _resolve_block("objects", target)
+    if name in block.keys():
+        return False
+    block[name] = float(value)
+    return True
 
 
 def read_channel_value(channel: state_tables.Channel):
