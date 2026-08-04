@@ -1099,10 +1099,16 @@ def _resolve_socket(node, want: str) -> str | None:
 
 
 def _default_value_owner(context, collection):
-    """Where a new driver value lives: the element's registration empty.
+    """The *default* owner for a new driver value: the registration empty.
 
     It is the one object every element is guaranteed to have and the one that
     never moves, so a value parked on it survives any amount of re-modelling.
+
+    Only a default, though — this seeds an editable field, and falls back to
+    the active object when the element has no resolvable registration empty. So
+    a value can end up on any object, and the table's channel is the only
+    authority on which. Anything telling the designer where to point a driver
+    must read the target back out rather than assume the empty.
     """
     empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
     if empty is not None:
@@ -1205,8 +1211,9 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
             ("EMISSION_COLOR", "Emission Colour", "A material node's emission colour"),
             ("LOCATION", "Location", "One axis of an object's position (fader detents)"),
             ("SHAPE_KEY", "Shape Key", "A shape key's value on a mesh (pressed caps)"),
-            ("DRIVER_VALUE", "Driver Value",
-             "A named number the states drive, for your own drivers to read"),
+            ("DRIVER_VALUE", "Custom Property",
+             "A named number on the target object that the states drive, for "
+             "your own drivers to read. Not a driver itself"),
         ),
         default="VISIBILITY",
         update=_seed_state_target,
@@ -1222,9 +1229,10 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
         default="0")
     key_name: bpy.props.StringProperty(name="Shape Key", description="Shape key name")
     value_name: bpy.props.StringProperty(
-        name="Value Name",
-        description="Custom-property name the states drive; point your drivers "
-                    "at it as a Single Property variable")
+        name="Property Name",
+        description="Custom-property name the states drive. It lives on the "
+                    "target object; a driver reads it as a Single Property "
+                    "variable naming that object and this name")
 
     def invoke(self, context, event):
         _seed_state_target(self, context)
@@ -1243,9 +1251,14 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
             col.prop(self, "key_name")
         elif self.action == "DRIVER_VALUE":
             col.prop(self, "value_name")
-            col.label(text="Drive anything with it: add a driver, Single",
+            # Spell out both halves of the address. A property name is not a
+            # driver name and cannot be typed on its own anywhere: it only
+            # means something paired with the object that carries it.
+            col.label(text="A property on the target, not a driver.",
                       icon="DRIVER")
-            col.label(text=f'Property, this object, path ["{self.value_name}"]')
+            col.label(text="In a driver: Single Property variable,")
+            col.label(text=f'Object {self.target or "?"}, '
+                           f'path ["{self.value_name}"]')
 
     def _draw_socket_hint(self, col) -> None:
         """Say up front which socket will be used, or that the node is missing.
@@ -1283,12 +1296,33 @@ class REBLEND_OT_add_state_action(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         collection["re_states"] = table.to_json()
+        created = self._materialise_value(target)
         self.report(
             {"INFO"},
             f"added {self.action.replace('_', ' ').lower()} on '{target}' "
-            f"to {table.frames} state(s)",
+            f"to {table.frames} state(s){created}",
         )
         return {"FINISHED"}
+
+    def _materialise_value(self, target: str) -> str:
+        """Create a driver value's property now, so drivers can be wired at once.
+
+        See :func:`reblend.model.rigs.ensure_value_property` for why deferring
+        this to Generate Rig leaves a window that costs an hour to diagnose.
+        """
+        if self.action != "DRIVER_VALUE":
+            return ""
+        name = self.value_name.strip()
+        try:
+            created = rigs.ensure_value_property(target, name)
+        except KeyError:
+            # An object that does not exist yet is Generate Rig's error to
+            # report, not a reason to refuse the declaration — the table is
+            # still valid metadata. Say what did not happen rather than
+            # leaving the missing property to be discovered through a driver.
+            return (f' — no object {target!r} yet, so ["{name}"] is not '
+                    f"there to point a driver at; it appears on Generate Rig")
+        return f' — created ["{name}"] on {target!r}' if created else ""
 
     def _build_actions(self, target):
         if self.action == "VISIBILITY":
@@ -1364,12 +1398,32 @@ class REBLEND_OT_remove_state_action(bpy.types.Operator):
         if not 0 <= self.control < len(controls):
             self.report({"ERROR"}, "no such state action")
             return {"CANCELLED"}
-        label = state_tables.describe_channel(controls[self.control][0])
-        for channel in controls[self.control]:
+        channels = controls[self.control]
+        label = state_tables.describe_channel(channels[0])
+        leftovers = self._leftovers(channels)
+        for channel in channels:
             table.remove_channel(channel)
         collection["re_states"] = table.to_json()
-        self.report({"INFO"}, f"removed {label}")
+        self.report({"INFO"}, f"removed {label}{leftovers}")
         return {"FINISHED"}
+
+    def _leftovers(self, channels) -> str:
+        """Name what removal deliberately leaves behind in the scene.
+
+        The table is metadata: removing a control never touches the datablocks
+        it drove. For a driver value that is the *right* call — the designer's
+        own drivers point at the custom property, and deleting it would break
+        them silently, at a distance, with no error. But nothing else will ever
+        collect it either: :func:`~reblend.model.rigs.apply_state_table` prunes
+        only channels the current table still touches, so the f-curve keeps
+        animating a property no table declares. Saying so beats leaving it to
+        be found.
+        """
+        name = state_tables.id_property_of(channels[0][2])
+        if name is None:
+            return ""
+        return (f' — ["{name}"] and its keys stay on {channels[0][1]!r} so '
+                f"existing drivers keep working; delete them by hand if unused")
 
 
 class REBLEND_OT_set_state_value(bpy.types.Operator):
@@ -1734,15 +1788,17 @@ class REBLEND_OT_repair_state_channels(bpy.types.Operator):
 
 
 class REBLEND_OT_copy_driver_reference(bpy.types.Operator):
-    """Copy a driver value's path to the clipboard (§4.3).
+    """Copy a driver value's property path to the clipboard (§4.3).
 
     Wiring one up by hand means an object name and an ID-property path typed
     into a driver variable exactly right; this puts the path where it can be
-    pasted and names the object to point the variable at.
+    pasted and names the object to point the variable at. Both halves are
+    needed: the path is relative to the object, so the name alone addresses
+    nothing.
     """
 
     bl_idname = "reblend.copy_driver_reference"
-    bl_label = "Copy Driver Path"
+    bl_label = "Copy Property Path"
 
     control: bpy.props.IntProperty(default=-1)
 
@@ -1760,10 +1816,27 @@ class REBLEND_OT_copy_driver_reference(bpy.types.Operator):
             self.report({"ERROR"}, "no such state action")
             return {"CANCELLED"}
         _id_type, target, data_path, _index = controls[self.control][0]
-        if state_tables.id_property_of(data_path) is None:
+        name = state_tables.id_property_of(data_path)
+        if name is None:
             self.report({"ERROR"}, "that action is not a driver value")
             return {"CANCELLED"}
         context.window_manager.clipboard = data_path
+
+        # Copy either way — the path is correct regardless, and pre-wiring a
+        # driver is legitimate. But a variable that evaluates once against an
+        # absent property keeps Blender's stale red path error afterwards
+        # (rigs.ensure_value_property), so name the cure while it is cheap.
+        # Tables authored before the property was created at declaration time
+        # are the case this still catches.
+        owner = bpy.data.objects.get(target)
+        if owner is None or name not in owner.keys():
+            self.report(
+                {"WARNING"},
+                f"copied {data_path}, but it is not on '{target}' yet — run "
+                f"Generate Rig, then step the frame once to clear Blender's "
+                f"stale path error",
+            )
+            return {"FINISHED"}
         self.report(
             {"INFO"},
             f"copied {data_path} — add a driver, Single Property variable, "

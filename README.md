@@ -106,10 +106,14 @@ exactly evenly spaced — which the SDK requires of it, and hand-typed detents d
 Validation flags uneven fader travel, state tables that don't match the frame count, and
 multi-frame controls with no rig at all.
 
-For anything the built-in actions don't cover, add a **Driver Value**: a named number
+For anything the built-in actions don't cover, add a **Custom Property**: a named number
 (`lovely-cucumber`) the states drive, which your own drivers can read as a Single Property
 variable — so a state table can reach a modifier, a geometry-node input or a constraint without
-RE-Blend needing an action type for each.
+RE-Blend needing an action type for each. It is a property *on an object*, not a driver, so a
+driver addresses it in two halves: the object in the variable's Prop field, and the path
+`["lovely-cucumber"]` relative to it. **Copy Property Path** puts the path on the clipboard and
+names the object in its report. See [docs/findings-driver-values.md](docs/findings-driver-values.md)
+if a path field stays red after you wire one up.
 
 ### 4. Render and validate
 
