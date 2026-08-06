@@ -121,6 +121,7 @@ carrying RE-Blend custom properties:
 | `re_panel` | Which panel(s) it appears on |
 | `re_offset_x`, `re_offset_y` | Placement in panel pixels (top-left origin, +y down) |
 | `re_registration` | Reference to the element's **registration empty** (see below) |
+| `re_shadow_owner` | Where the element's cast shadow is rendered: `background` (baked into the panel plate) or `element` (into its own sheet, travelling with the art) — see §5.1 |
 
 The **registration empty** is a 3D empty marking the element's registration point (for
 knobs: the rotation axis). The per-element render camera is derived from it, which makes
@@ -228,6 +229,8 @@ The **Render Elements** operator, for each selected (or all, or dirty-only) elem
    visibility — invisible to the camera, still shadowing the active element, catching
    nothing), so neighbouring geometry keeps grounding the active control; alternatively
    they are **hidden** outright (engine-agnostic) so the element renders wholly alone.
+   This setting governs shadows falling *on* the element being rendered; where the
+   element's own cast shadow goes is a separate, per-element question — see below.
 2. Configure: element camera, `re_frame_w × re_frame_h` resolution, transparent film,
    straight-alpha PNG output, 8-bit, sRGB.
 3. Render frames `0 … re_frames − 1`.
@@ -235,8 +238,54 @@ The **Render Elements** operator, for each selected (or all, or dirty-only) elem
    (§8 covers how) and write `GUI2D/<re_path>.png` in the linked project.
 5. Record a render manifest entry (element, frames, size, content hash, scene hash).
 
-Backdrops render as a full-panel pass with all interactive elements hidden (or shown in
-an engraved/recessed representation that is part of the panel itself).
+Backdrops render as a full-panel pass over the same isolation rules as any other
+element — interactive controls are invisible to the camera, but by default still cast
+onto the plate (or are shown in an engraved/recessed representation that is part of the
+panel itself).
+
+#### Shadow ownership (per element)
+
+Every element declares who owns its *cast* shadow (`re_shadow_owner`):
+
+- **Background** (default) — the shadow bakes into the panel plate underneath. Correct
+  for anything whose silhouette holds still across its own frames: a knob spins in place,
+  a button's cap depresses within its own outline, so the contact shadow is identical
+  frame to frame. Cheaper too — one shadow in the backdrop instead of the same shadow
+  repeated in every frame of the sheet.
+- **Element** — the shadow renders into the element's own sheet and travels with the art
+  frame by frame. Required when the silhouette moves relative to the panel between
+  frames. A `sequence_fader` is the clear case: the spec makes it bake the handle's
+  entire travel, one frame per position, so a shadow left in the plate would sit frozen
+  at one handle position while the handle slides away from it.
+
+This is a correctness property, not a preference, so it cannot be a scene-wide switch —
+and it is a *two-sided* one, read from opposite ends in two different render passes:
+
+- Rendering the backdrop: a neighbour is kept as a shadow-only caster only if it is a
+  **background** owner. An element owner never casts into someone else's sheet.
+- Rendering an **element** owner: the backdrop beneath it becomes a Cycles **shadow
+  catcher**, so its shadow arrives as straight-alpha darkness in its own frames, and
+  every other caster is taken out for that pass. One rule keeps the result unambiguous:
+  an element-owned sheet contains exactly one shadow, its own — a neighbour's is already
+  in the plate, and catching it here too would darken the overlap twice.
+
+The default is derived from the element kind on import (fader → element, everything else
+→ background) and is user-owned thereafter: re-import never moves a shadow the designer
+has placed. Two costs are the designer's to weigh, and are why *element* is not the
+blanket default: the shadow must fit inside `re_frame_w × re_frame_h` (the overflow
+check in §5.2 enforces it), which for a widget whose graphics rect is also its hit rect
+means a slightly larger touch area; and shadow catching needs Cycles. Both are reported
+as findings rather than assumed.
+
+Because the default is a guess and the choice is a correctness one, validation measures
+the element's geometry frame by frame and checks the two against each other (§6.3).
+Movement is decomposed in the render camera's basis, since the two axes fail differently:
+sliding **across** the camera plane strands a baked shadow at frame 0's position and is
+an **error**; moving **along** the camera axis (a button cap pressing in) only shifts and
+softens the real shadow, so it is a **warning** — whether that shift reads depends on the
+scene's lights, which is the designer's call. Travel is measured per object and maxed, so
+a static bracket sharing the collection cannot average a moving part's travel down, and
+sub-pixel movement is ignored because the sheet is authored in whole pixels.
 
 ### 5.2 Correctness guarantees (the point of the tool)
 
@@ -427,6 +476,8 @@ click-to-select:
 | Non-Standard view transform / non-sRGB output | warning |
 | Element bounding boxes overlapping / outside panel bounds | warning |
 | Widget type ↔ element kind mismatch (e.g. knob rig on a `toggle_button` node) | warning |
+| Geometry slides across the panel between frames with its shadow baked into the background (§5.1) | error |
+| Geometry moves only along the camera axis with its shadow baked into the background | warning |
 
 The same validation runs headlessly with a non-zero exit code on errors (§7), so it can
 gate a build.

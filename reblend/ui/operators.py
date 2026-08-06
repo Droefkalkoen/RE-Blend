@@ -26,7 +26,7 @@ from ..project import lua_writer, merge, reporting, sdk_parts, validation
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
 from ..project.lua_writer import PatchError
-from ..render import bpy_io, compositor, renderer, stitcher
+from ..render import bpy_io, compositor, renderer, shadows, stitcher
 from . import props
 
 #: Root collection name per panel (§4.2).
@@ -124,14 +124,18 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
         collection = bpy.data.collections.new(spec.path)
 
     # Fill/update the Lua-derived properties. User-owned properties
-    # (sweep, states, registration, preview frame) keep their existing values
-    # on update, and a frame size the user already chose is never clobbered
-    # by "unknown". A kept key that is *absent* still gets its default:
+    # (sweep, states, registration, preview frame, shadow owner) keep their
+    # existing values on update — shadow ownership included, because the
+    # kind-derived default is only a starting guess and re-import must not
+    # quietly move a shadow the designer has already placed. A frame size the
+    # user already chose is likewise never clobbered by "unknown". A kept key
+    # that is *absent* still gets its default:
     # data_to_props stamps the current re_schema, so every versioned property
     # must exist afterwards or the migration that would add it never runs.
     keep = set()
     if not is_new:
-        keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame"}
+        keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame",
+                "re_shadow_owner"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
     old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
@@ -357,6 +361,33 @@ def active_frame_size(context) -> tuple[int, int]:
         return (0, 0)
     return (int(collection.get("re_frame_w", 0)),
             int(collection.get("re_frame_h", 0)))
+
+
+def active_shadow_owner(context) -> str:
+    """The active element's shadow owner (§5.1), defaulted by kind.
+
+    Empty string when no element is active, so the panel can leave the field
+    out rather than show a choice that belongs to nothing.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return ""
+    return schema.props_to_data(collection).shadow_owner
+
+
+def set_active_shadow_owner(context, owner: str) -> None:
+    """Setter behind the panel's Shadow proxy: write it through to the element.
+
+    Only the property changes — nothing is re-rendered here. The choice takes
+    effect on the next render of this element (its own shadow arrives in its
+    sheet) *and* on the next render of the panel backdrop (its shadow stops
+    being baked there), which is why it is stored rather than acted on.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    if owner in kinds.SHADOW_OWNERS:
+        collection["re_shadow_owner"] = owner
 
 
 def set_active_frame_size(context, w: int | None = None,
@@ -633,7 +664,7 @@ class REBLEND_OT_validate(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        elements = _scene_elements(context)
+        elements = _scene_elements(context, measure_travel=True)
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
@@ -1935,9 +1966,102 @@ def _element_snapshot(collection, settings) -> schema.ElementData:
     return data
 
 
-def _scene_elements(context) -> list[schema.ElementData]:
-    return [_element_snapshot(c, _settings(context))
-            for c in _element_collections(context.scene)]
+def _scene_elements(context, measure_travel: bool = False
+                    ) -> list[schema.ElementData]:
+    """Every element as the scene has it.
+
+    ``measure_travel`` additionally steps the timeline to measure how far each
+    element's geometry moves across its frames (§5.1). Off by default because
+    it re-evaluates the depsgraph once per frame: only validation consumes the
+    answer, and sync and export should not pay for it.
+    """
+    settings = _settings(context)
+    collections = _element_collections(context.scene)
+    snapshots = [_element_snapshot(c, settings) for c in collections]
+    if measure_travel:
+        travel = _measure_frame_travel(context, collections, settings)
+        for collection, data in zip(collections, snapshots):
+            data.frame_travel = travel.get(collection.name, schema.Travel())
+    return snapshots
+
+
+#: Object types with an evaluated bounding box worth measuring. Empties (the
+#: registration anchor) and lights have none, and contribute no shadow either.
+_GEOMETRY_TYPES = frozenset({"MESH", "CURVE", "SURFACE", "META", "FONT"})
+
+
+def _measure_frame_travel(context, collections, settings
+                          ) -> dict[str, schema.Travel]:
+    """How far each element's geometry moves across its own frames (§5.1).
+
+    One pass over the frames the scene uses, measuring every element at each,
+    rather than stepping the timeline once per element: the depsgraph
+    evaluation is the expensive part and it is shared.
+
+    Two details the result depends on. Movement is decomposed in the *render
+    camera's* basis — taken through the registration empty, exactly as
+    :func:`reblend.render.renderer._make_camera` does — because sliding across
+    the camera plane and moving along the camera axis strand a baked shadow
+    very differently. And travel is measured per object and maxed, not over
+    the element's combined bounds: a static sibling in the same collection
+    would otherwise average a moving part's travel down towards nothing.
+    """
+    scene = context.scene
+    tracked = [
+        (c, int(c.get("re_frames", 1)), _camera_basis(c, settings))
+        for c in collections
+        if int(c.get("re_frames", 1)) > 1
+    ]
+    if not tracked:
+        return {}
+
+    # collection name -> object name -> its world bbox centre at each frame,
+    # already projected onto (depth, across-u, across-v).
+    tracks: dict[str, dict[str, list[tuple[float, float, float]]]] = {}
+    saved_frame = scene.frame_current
+    try:
+        for frame in range(max(frames for _c, frames, _basis in tracked)):
+            scene.frame_set(frame)
+            depsgraph = context.evaluated_depsgraph_get()
+            for collection, frames, (axis, u, v) in tracked:
+                if frame >= frames:
+                    continue
+                per_object = tracks.setdefault(collection.name, {})
+                for obj in collection.all_objects:
+                    if obj.type not in _GEOMETRY_TYPES or "re_guide" in obj:
+                        continue
+                    centre = _world_bbox_centre(obj.evaluated_get(depsgraph))
+                    per_object.setdefault(obj.name, []).append(
+                        (centre.dot(axis), centre.dot(u), centre.dot(v))
+                    )
+    finally:
+        scene.frame_set(saved_frame)
+
+    return {
+        name: shadows.travel_from_samples(per_object, settings.ppb)
+        for name, per_object in tracks.items()
+    }
+
+
+def _camera_basis(collection, settings) -> tuple[Vector, Vector, Vector]:
+    """``(camera axis, in-plane u, in-plane v)`` for one element.
+
+    The camera axis runs through the registration empty, so an element
+    modelled at a tilt is measured against the view it actually renders from
+    rather than the world axis.
+    """
+    axis = Vector(calibration.axis_vector(settings.camera_axis))
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is not None:
+        axis = empty.matrix_world.to_quaternion() @ axis
+    axis = axis.normalized()
+    u = axis.orthogonal().normalized()
+    return axis, u, axis.cross(u).normalized()
+
+
+def _world_bbox_centre(obj) -> Vector:
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    return sum(corners, Vector((0.0, 0.0, 0.0))) / len(corners)
 
 
 class REBLEND_OT_export_patch(bpy.types.Operator):

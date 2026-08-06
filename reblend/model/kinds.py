@@ -51,11 +51,15 @@ __all__ = [
     "ALL_KINDS",
     "RIG_DRIVER",
     "RIG_STATES",
+    "SHADOW_BACKGROUND",
+    "SHADOW_ELEMENT",
+    "SHADOW_OWNERS",
     "WIDGET_KINDS",
     "WIDGET_FRAME_RULES",
     "FrameRule",
     "kind_for_node",
     "rig_for_kind",
+    "default_shadow_owner",
     "is_sdk_supplied",
     "is_interactive",
     "renders_art",
@@ -261,6 +265,37 @@ def kind_for_node(
 def rig_for_kind(kind: str) -> str | None:
     """Which rig flavour a kind gets: driver, state table, or none."""
     return _RIGS.get(kind)
+
+
+#: Who owns an element's *cast* shadow (§5.1). ``SHADOW_BACKGROUND`` bakes it
+#: into the panel plate underneath — right for anything that holds still, and
+#: cheaper (one shadow in the backdrop instead of the same shadow repeated in
+#: every frame of the sheet). ``SHADOW_ELEMENT`` renders it into the element's
+#: own sheet, where it travels with the art frame by frame.
+SHADOW_BACKGROUND = "background"
+SHADOW_ELEMENT = "element"
+SHADOW_OWNERS = (SHADOW_BACKGROUND, SHADOW_ELEMENT)
+
+#: Kinds whose silhouette moves *relative to the panel* across their own
+#: frames, so a shadow baked into the plate would sit frozen at one position
+#: while the art slides away from it.
+#:
+#: Only the fader qualifies from the kind alone: the scripting specification
+#: requires a ``sequence_fader`` sheet to bake "the entire travel distance of
+#: the handle", one frame per position (docs/sdk-gui-reference.md), so the
+#: handle is drawn somewhere different in every frame. A knob spins in place
+#: and a button's cap depresses within its own outline — their contact shadow
+#: is identical frame to frame, so it belongs to the plate. A button with real
+#: travel is a judgement call the designer makes per element; this is only the
+#: default RE-Blend starts it at.
+_SHADOW_ELEMENT_KINDS = frozenset({FADER_HANDLE})
+
+
+def default_shadow_owner(kind: str) -> str:
+    """Where a freshly imported element of this kind should put its shadow."""
+    if kind in _SHADOW_ELEMENT_KINDS:
+        return SHADOW_ELEMENT
+    return SHADOW_BACKGROUND
 
 
 #: Kinds that never respond to user input. Everything else can, so everything

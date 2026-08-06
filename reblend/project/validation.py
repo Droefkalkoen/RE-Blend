@@ -40,6 +40,11 @@ WARNING = "warning"
 #: The only view transform that keeps palette hex values intact (§5.2).
 STANDARD_VIEW_TRANSFORM = "Standard"
 
+#: Movement below this many panel pixels cannot strand a baked shadow
+#: visibly — the sheet is authored in whole pixels, so sub-pixel drift (a
+#: rotating rotor's bounding box breathing, say) is not a finding.
+TRAVEL_TOLERANCE_PX = 1.0
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -120,6 +125,7 @@ def validate_project(
     _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
     _check_placement_drift(report, elements)
+    _check_shadow_owner(report, elements)
     _check_state_tables(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
@@ -409,6 +415,62 @@ def _check_placement_drift(
                 "Export Layout writes it, Re-import & Reposition discards it",
                 subject=element.path,
                 panel=stored.panel,
+            )
+
+
+def _check_shadow_owner(
+    report: Report, elements: Sequence[schema.ElementData]
+) -> None:
+    """Catch art that moves while its shadow is nailed to the panel (§5.1).
+
+    An element that hands its shadow to the background is promising the
+    shadow can be baked once and stay put, which is only true while the art
+    holds still relative to the panel. Break that promise and nothing
+    complains: RE2DRender compiles it, Reason draws it, and the control
+    simply drags a shadow that is in the wrong place — exactly the
+    silent-failure class RE-Blend exists to close.
+
+    Severity follows the axis the movement is on, because they fail
+    differently:
+
+    - **Across the camera plane** is an error. The art slides over the panel
+      and leaves the baked shadow behind at frame 0's position; there is no
+      lighting setup that makes that read correctly.
+    - **Along the camera axis** is a warning. The art only moves towards or
+      away from the viewer, so the shadow shifts and softens rather than
+      being stranded. On a button cap's few pixels of travel a baked shadow
+      is usually the right call — but whether the shift shows is a judgement
+      about the scene's lights, which is the designer's to make, not ours.
+
+    Elements that own their shadow are never flagged: moving is precisely
+    what that setting is for. Elements the scene has not measured
+    (``frame_travel is None``) are skipped rather than assumed still.
+    """
+    for element in elements:
+        travel = element.frame_travel
+        if travel is None or element.shadow_owner != kinds.SHADOW_BACKGROUND:
+            continue
+        if travel.across > TRAVEL_TOLERANCE_PX:
+            report.add(
+                ERROR,
+                "shadow-owner",
+                f"geometry slides {travel.across:.0f} px across the panel "
+                f"between frames, but its shadow is baked into the background "
+                "— the baked shadow stays where frame 0 put it while the art "
+                "moves away from it. Set Shadow to 'This Element' so the "
+                "shadow travels in the sheet",
+                subject=element.path,
+            )
+        elif travel.depth > TRAVEL_TOLERANCE_PX:
+            report.add(
+                WARNING,
+                "shadow-owner",
+                f"geometry moves {travel.depth:.0f} px along the camera axis "
+                f"between frames (towards or away from the viewer) with its "
+                "shadow baked into the background — the real shadow would "
+                "shift and soften, the baked one cannot. Usually fine for a "
+                "button cap; set Shadow to 'This Element' if the shift shows",
+                subject=element.path,
             )
 
 

@@ -31,6 +31,19 @@ def test_migrate_v1_adds_preview_frame():
     assert props["re_preview_frame"] == 0
 
 
+def test_migrate_v2_pins_shadow_owner_to_the_background():
+    # An M2-era element: full v2 property set, no re_shadow_owner. Every
+    # shadow went into the plate before the property existed, so the
+    # migration must say so outright rather than let a fader pick up the
+    # kind-derived default and silently re-render differently.
+    props = dict(schema.DEFAULTS)
+    props["re_schema"] = 2
+    props["re_kind"] = "fader_handle"
+    del props["re_shadow_owner"]
+    assert schema.migrate(props) is True
+    assert props["re_shadow_owner"] == "background"
+
+
 def test_migrate_current_version_is_a_noop():
     props = dict(schema.DEFAULTS)
     assert schema.migrate(props) is False
@@ -118,6 +131,27 @@ def test_moved_ignores_placements_the_scene_says_nothing_about():
     data = _placed()
     data.derived_placements = (Placement("folded_front", "knob_a", 9.0, 9.0),)
     assert data.moved == ()  # different node/panel: nothing to compare against
+
+
+def test_shadow_owner_defaults_by_kind():
+    assert ElementData(node="k", path="Knob", kind="knob").shadow_owner == "background"
+    assert ElementData(node="f", path="Fader",
+                       kind="fader_handle").shadow_owner == "element"
+
+
+def test_a_stored_shadow_owner_survives_the_props_round_trip():
+    # The designer's override outranks the kind default in both directions.
+    data = ElementData(node="k", path="Knob", kind="knob", shadow_owner="element")
+    props = schema.data_to_props(data)
+    assert props["re_shadow_owner"] == "element"
+    assert schema.props_to_data(props).shadow_owner == "element"
+
+
+def test_a_blanked_shadow_owner_falls_back_to_the_kind_default():
+    props = dict(schema.DEFAULTS)
+    props.update(re_node="f", re_path="Fader", re_kind="fader_handle",
+                 re_shadow_owner="")
+    assert schema.props_to_data(props).shadow_owner == "element"
 
 
 def test_states_round_trip_through_props():

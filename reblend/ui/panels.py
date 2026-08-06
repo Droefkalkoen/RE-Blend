@@ -109,6 +109,14 @@ class REBLEND_PT_active(bpy.types.Panel):
         row.prop(settings, "active_frame_h", text="Frame H")
         if data.has_frame_size:
             layout.operator("reblend.scale_to_bounds", icon="FULLSCREEN_EXIT")
+        # The backdrop *is* the plate other elements drop shadows onto, so it
+        # has no plate of its own to choose between — the question only makes
+        # sense for art that sits on top of one.
+        if kinds.renders_art(data.kind) and data.kind != kinds.BACKDROP:
+            layout.prop(settings, "active_shadow_owner")
+            if (data.shadow_owner == kinds.SHADOW_ELEMENT
+                    and context.scene.render.engine != "CYCLES"):
+                layout.label(text="Element shadows need Cycles", icon="ERROR")
         row = layout.row(align=True)
         row.operator("reblend.generate_rig", icon="DRIVER")
         row.operator("reblend.generate_all_rigs", text="All", icon="OUTLINER")

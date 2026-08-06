@@ -31,6 +31,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "DEFAULTS",
     "Placement",
+    "Travel",
     "ElementData",
     "MIGRATIONS",
     "is_element",
@@ -40,7 +41,7 @@ __all__ = [
 ]
 
 #: Current schema version. Bump on any property change and add a migration.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Property names and their defaults at the current schema version.
 DEFAULTS: dict[str, Any] = {
@@ -59,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
     "re_states": "",          # state table JSON (state_tables module), "" = none
     "re_placements": "[]",    # JSON list of [panel, node, x, y]
     "re_preview_frame": 0,    # frame shown in the panel preview (§5.3)
+    #: Who owns this element's cast shadow (§5.1) — one of kinds.SHADOW_OWNERS.
+    "re_shadow_owner": kinds.SHADOW_BACKGROUND,
 }
 
 
@@ -74,6 +77,25 @@ class Placement:
     node: str
     x: float
     y: float
+
+
+@dataclass(frozen=True)
+class Travel:
+    """How far an element's geometry moves across its own frames, in panel px.
+
+    Measured in the render camera's basis, because that is what decides
+    whether a shadow baked into the panel can stay where it is: ``across`` is
+    movement in the plane the camera sees (the art sliding over the panel,
+    which strands a baked shadow), ``depth`` is movement along the camera axis
+    (towards or away from the viewer, which only shifts and softens it).
+    """
+
+    across: float = 0.0
+    depth: float = 0.0
+
+    @property
+    def moves(self) -> bool:
+        return bool(self.across or self.depth)
 
 
 @dataclass
@@ -94,6 +116,10 @@ class ElementData:
     #: The element's ``re_states`` JSON verbatim, so validation can check the
     #: state table (state count, a fader's even travel) without ``bpy``.
     states: str = ""
+    #: Who owns the element's cast shadow (§5.1). Left empty it resolves to
+    #: the kind's default, so this always names a real choice once the
+    #: dataclass exists — the renderer has no "undecided" case to handle.
+    shadow_owner: str = ""
     #: Where the *scene* currently puts the element, read back from its
     #: registration empty. Empty unless the Blender side filled it in.
     #:
@@ -103,6 +129,15 @@ class ElementData:
     #: instead of silent — moving an empty otherwise changed nothing any check
     #: could see until an export quietly wrote it out.
     derived_placements: tuple[Placement, ...] = field(default_factory=tuple)
+    #: How far the element's geometry moves across its frames, measured from
+    #: the scene. ``None`` when nothing has measured it — a rig has to be
+    #: evaluated frame by frame to know, so headless callers and tests leave
+    #: it unset and the checks that need it stay quiet.
+    frame_travel: "Travel | None" = None
+
+    def __post_init__(self) -> None:
+        if not self.shadow_owner:
+            self.shadow_owner = kinds.default_shadow_owner(self.kind)
 
     @property
     def panels(self) -> tuple[str, ...]:
@@ -180,6 +215,21 @@ def _add_preview_frame(props: MutableMapping[str, Any]) -> None:
         props["re_preview_frame"] = 0
 
 
+@_migration(2)
+def _add_shadow_owner(props: MutableMapping[str, Any]) -> None:
+    """v2 → v3: shadow ownership (§5.1) joins the schema.
+
+    Existing elements are pinned to ``background`` rather than picking up the
+    kind-derived default: before this property existed every shadow went into
+    the plate underneath, and a file that already rendered must keep rendering
+    the same pixels. New elements get the smarter default through
+    :func:`data_to_props`; an old fader that should own its shadow is the
+    designer's call to make, not a migration's.
+    """
+    if "re_shadow_owner" not in props:
+        props["re_shadow_owner"] = kinds.SHADOW_BACKGROUND
+
+
 def migrate(props: MutableMapping[str, Any]) -> bool:
     """Bring an element's properties up to :data:`SCHEMA_VERSION` in place.
 
@@ -224,6 +274,7 @@ def data_to_props(data: ElementData) -> dict[str, Any]:
         re_placements=json.dumps(
             [[p.panel, p.node, p.x, p.y] for p in data.placements]
         ),
+        re_shadow_owner=data.shadow_owner,
     )
     return props
 
@@ -267,4 +318,5 @@ def props_to_data(props: MutableMapping[str, Any]) -> ElementData:
         frame_h=int(working["re_frame_h"]),
         placements=tuple(placements),
         states=str(working.get("re_states", "")),
+        shadow_owner=str(working.get("re_shadow_owner", "")),
     )

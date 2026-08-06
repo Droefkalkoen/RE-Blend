@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import bpy
 
-from ..model import calibration
+from ..model import calibration, kinds
 from ..project import lua_reader
 
 
@@ -55,6 +55,27 @@ _RESOLUTION_ITEMS_REMOVED = (
                          "and state keyframes. The Lua files and any rendered "
                          "PNG on disk are not touched"),
 )
+
+
+#: Per-element shadow ownership (§5.1), drawn as a proxy over the active
+#: element's ``re_shadow_owner``. Module level for the same reason as the
+#: resolution items: Blender keeps only a pointer to these strings.
+_SHADOW_OWNER_ITEMS = (
+    (kinds.SHADOW_BACKGROUND, "Background",
+     "Bake this element's cast shadow into the panel underneath. Right for "
+     "anything that holds still across its frames (a knob spins in place, a "
+     "button's cap presses within its own outline) — the shadow is rendered "
+     "once into the backdrop instead of repeated in every frame"),
+    (kinds.SHADOW_ELEMENT, "This Element",
+     "Render this element's cast shadow into its own sheet, where it travels "
+     "with the art frame by frame. Needed whenever the art moves across the "
+     "panel between frames — a fader handle bakes its whole travel, so a "
+     "shadow left in the backdrop would sit frozen at one position. Costs a "
+     "bigger frame to fit the shadow in, and needs Cycles"),
+)
+_SHADOW_OWNER_INDEX = {
+    owner: index for index, (owner, _label, _desc) in enumerate(_SHADOW_OWNER_ITEMS)
+}
 
 
 def _resolution_items(self, _context):
@@ -212,7 +233,10 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         name="Inactive Elements",
         description="How the other RE Elements behave while one element is "
                     "rendered (§5.1). Shadow-only keeps neighbouring geometry "
-                    "shadowing the active element without appearing in its sheet",
+                    "shadowing the active element without appearing in its "
+                    "sheet. This is about shadows falling *on* the element "
+                    "being rendered — where an element's own cast shadow goes "
+                    "is the per-element Shadow setting",
         items=(
             ("SHADOW", "Cast Shadows",
              "Invisible to the camera but still cast shadows on the active "
@@ -265,6 +289,13 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         get=lambda self: _active_frame_size()[1],
         set=lambda self, value: _set_active_frame_size(h=value),
     )
+    active_shadow_owner: bpy.props.EnumProperty(
+        name="Shadow",
+        description="Where the active element's cast shadow is rendered (§5.1)",
+        items=_SHADOW_OWNER_ITEMS,
+        get=lambda self: _active_shadow_owner(),
+        set=lambda self, value: _set_active_shadow_owner(value),
+    )
 
 
 def _active_frame_size() -> tuple[int, int]:
@@ -277,6 +308,21 @@ def _set_active_frame_size(w: int | None = None, h: int | None = None) -> None:
     from . import operators  # local: operators imports props at module load
 
     operators.set_active_frame_size(bpy.context, w=w, h=h)
+
+
+def _active_shadow_owner() -> int:
+    """Enum get/set work in item indices, so translate at the boundary."""
+    from . import operators  # local: operators imports props at module load
+
+    owner = operators.active_shadow_owner(bpy.context)
+    return _SHADOW_OWNER_INDEX.get(owner, 0)
+
+
+def _set_active_shadow_owner(index: int) -> None:
+    from . import operators  # local: operators imports props at module load
+
+    if 0 <= index < len(_SHADOW_OWNER_ITEMS):
+        operators.set_active_shadow_owner(bpy.context, _SHADOW_OWNER_ITEMS[index][0])
 
 
 def _timestamp() -> str:
