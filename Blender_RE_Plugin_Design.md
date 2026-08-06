@@ -277,6 +277,16 @@ check in §5.2 enforces it), which for a widget whose graphics rect is also its 
 means a slightly larger touch area; and shadow catching needs Cycles. Both are reported
 as findings rather than assumed.
 
+Because the default is a guess and the choice is a correctness one, validation measures
+the element's geometry frame by frame and checks the two against each other (§6.3).
+Movement is decomposed in the render camera's basis, since the two axes fail differently:
+sliding **across** the camera plane strands a baked shadow at frame 0's position and is
+an **error**; moving **along** the camera axis (a button cap pressing in) only shifts and
+softens the real shadow, so it is a **warning** — whether that shift reads depends on the
+scene's lights, which is the designer's call. Travel is measured per object and maxed, so
+a static bracket sharing the collection cannot average a moving part's travel down, and
+sub-pixel movement is ignored because the sheet is authored in whole pixels.
+
 ### 5.2 Correctness guarantees (the point of the tool)
 
 - **Registration:** camera fixed per element ⇒ all frames register identically.
@@ -466,6 +476,8 @@ click-to-select:
 | Non-Standard view transform / non-sRGB output | warning |
 | Element bounding boxes overlapping / outside panel bounds | warning |
 | Widget type ↔ element kind mismatch (e.g. knob rig on a `toggle_button` node) | warning |
+| Geometry slides across the panel between frames with its shadow baked into the background (§5.1) | error |
+| Geometry moves only along the camera axis with its shadow baked into the background | warning |
 
 The same validation runs headlessly with a non-zero exit code on errors (§7), so it can
 gate a build.

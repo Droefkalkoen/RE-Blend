@@ -34,7 +34,11 @@ Pure on purpose: the policy is the part worth testing, and it needs no
 
 from __future__ import annotations
 
+import math
+from typing import Mapping, Sequence
+
 from ..model import kinds
+from ..model.schema import Travel
 
 __all__ = [
     "INACTIVE_SHADOW",
@@ -45,6 +49,7 @@ __all__ = [
     "ROLE_CATCHER",
     "NEEDS_CYCLES",
     "sibling_role",
+    "travel_from_samples",
 ]
 
 #: Isolation modes (the scene-wide "Inactive Elements" setting).
@@ -97,3 +102,29 @@ def sibling_role(
         # casting it into the plate as well would draw it twice.
         return ROLE_HIDDEN
     return ROLE_CASTER
+
+
+def travel_from_samples(
+    per_object: Mapping[str, Sequence[tuple[float, float, float]]], ppb: float
+) -> Travel:
+    """Reduce per-frame position samples to one element's travel, in panel px.
+
+    Each sample is one object's position at one frame, already projected onto
+    the render camera's basis as ``(along the camera axis, in-plane u,
+    in-plane v)``; ``ppb`` converts Blender units to panel pixels.
+
+    The two decisions worth stating. Travel is the widest any *single* object
+    moves, not how far the element's combined bounds move: a control modelled
+    as a moving part plus a static bracket in one collection would otherwise
+    average down towards standing still. And the in-plane result combines both
+    axes, so a diagonal slide counts as its true distance rather than as
+    whichever component happens to be larger.
+    """
+    across = depth = 0.0
+    for samples in per_object.values():
+        if len(samples) < 2:
+            continue
+        spans = [max(values) - min(values) for values in zip(*samples)]
+        depth = max(depth, spans[0] * ppb)
+        across = max(across, math.hypot(spans[1], spans[2]) * ppb)
+    return Travel(across=across, depth=depth)

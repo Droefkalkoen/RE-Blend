@@ -147,6 +147,71 @@ def test_unmoved_elements_report_no_drift(project_dir):
     assert "moved" not in codes(validate_link(link, elements))
 
 
+def _travelling(elements, path, across=0.0, depth=0.0):
+    element = next(e for e in elements if e.path == path)
+    element.frame_travel = validation.schema.Travel(across=across, depth=depth)
+    return element
+
+
+def test_art_that_slides_with_a_baked_shadow_is_an_error(project_dir):
+    # The silent-failure case the setting exists for: the shadow is nailed to
+    # the panel at frame 0 while the art moves off it.
+    link, elements = make_scene(project_dir)
+    _travelling(elements, "Knob_65x65_61frames", across=12.0)
+    report = validate_link(link, elements)
+    found = [f for f in report.errors if f.code == "shadow-owner"]
+    assert len(found) == 1
+    assert found[0].subject == "Knob_65x65_61frames"
+    assert "slides 12 px" in found[0].message
+    assert not report.ok
+
+
+def test_art_that_only_moves_in_depth_is_a_warning(project_dir):
+    # A button cap pressing in: the shadow shifts and softens rather than
+    # being stranded, so whether it shows is the designer's call.
+    link, elements = make_scene(project_dir)
+    _travelling(elements, "Button_50x35_2frames", depth=8.0)
+    report = validate_link(link, elements)
+    found = [f for f in report.warnings if f.code == "shadow-owner"]
+    assert len(found) == 1
+    assert found[0].subject == "Button_50x35_2frames"
+    assert "camera axis" in found[0].message
+    assert report.ok  # warning, not error
+
+
+def test_sliding_outranks_depth_in_the_same_element(project_dir):
+    link, elements = make_scene(project_dir)
+    _travelling(elements, "Knob_65x65_61frames", across=12.0, depth=8.0)
+    report = validate_link(link, elements)
+    found = [f for f in report.findings if f.code == "shadow-owner"]
+    assert len(found) == 1  # one finding, not one per axis
+    assert found[0].severity == validation.ERROR
+
+
+def test_sub_pixel_movement_is_not_a_finding(project_dir):
+    # A rotor's bounding box breathes as it spins; that cannot strand a
+    # shadow at the resolution the sheet is authored in.
+    link, elements = make_scene(project_dir)
+    _travelling(elements, "Knob_65x65_61frames", across=0.4, depth=0.9)
+    assert "shadow-owner" not in codes(validate_link(link, elements))
+
+
+def test_an_element_that_owns_its_shadow_may_move_freely(project_dir):
+    # The fader defaults to owning its shadow, and moving is the whole point.
+    link, elements = make_scene(project_dir)
+    fader = _travelling(elements, "Fader_25x60_3frames", across=40.0, depth=3.0)
+    assert fader.shadow_owner == kinds.SHADOW_ELEMENT
+    assert "shadow-owner" not in codes(validate_link(link, elements))
+
+
+def test_unmeasured_elements_are_not_assumed_still(project_dir):
+    # frame_travel is None outside Blender; the check must stay quiet rather
+    # than pass an element it has no evidence about.
+    link, elements = make_scene(project_dir)
+    assert all(e.frame_travel is None for e in elements)
+    assert "shadow-owner" not in codes(validate_link(link, elements))
+
+
 def test_layout_is_checked_where_the_element_now_sits(project_dir):
     # Dragged into the 25 px interaction-free margin: the margin finding must
     # follow the scene's position, not the stale one in the Lua.

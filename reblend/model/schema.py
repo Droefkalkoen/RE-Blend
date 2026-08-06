@@ -31,6 +31,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "DEFAULTS",
     "Placement",
+    "Travel",
     "ElementData",
     "MIGRATIONS",
     "is_element",
@@ -78,6 +79,25 @@ class Placement:
     y: float
 
 
+@dataclass(frozen=True)
+class Travel:
+    """How far an element's geometry moves across its own frames, in panel px.
+
+    Measured in the render camera's basis, because that is what decides
+    whether a shadow baked into the panel can stay where it is: ``across`` is
+    movement in the plane the camera sees (the art sliding over the panel,
+    which strands a baked shadow), ``depth`` is movement along the camera axis
+    (towards or away from the viewer, which only shifts and softens it).
+    """
+
+    across: float = 0.0
+    depth: float = 0.0
+
+    @property
+    def moves(self) -> bool:
+        return bool(self.across or self.depth)
+
+
 @dataclass
 class ElementData:
     """A schema-shaped snapshot of one element, decoupled from ``bpy``.
@@ -109,6 +129,11 @@ class ElementData:
     #: instead of silent — moving an empty otherwise changed nothing any check
     #: could see until an export quietly wrote it out.
     derived_placements: tuple[Placement, ...] = field(default_factory=tuple)
+    #: How far the element's geometry moves across its frames, measured from
+    #: the scene. ``None`` when nothing has measured it — a rig has to be
+    #: evaluated frame by frame to know, so headless callers and tests leave
+    #: it unset and the checks that need it stay quiet.
+    frame_travel: "Travel | None" = None
 
     def __post_init__(self) -> None:
         if not self.shadow_owner:

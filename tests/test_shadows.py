@@ -87,3 +87,48 @@ def test_stationary_kinds_default_to_the_background(kind):
 
 def test_unknown_kind_defaults_to_the_background():
     assert kinds.default_shadow_owner("something_a_future_sdk_adds") == BACKGROUND
+
+
+# --- reducing per-frame samples to a travel measurement
+#
+# Samples are (along the camera axis, in-plane u, in-plane v) per frame.
+
+
+def test_a_still_element_has_no_travel():
+    travel = shadows.travel_from_samples({"knob": [(0.0, 0.0, 0.0)] * 4}, ppb=10.0)
+    assert (travel.across, travel.depth) == (0.0, 0.0)
+    assert not travel.moves
+
+
+def test_in_plane_movement_is_measured_in_panel_pixels():
+    samples = [(0.0, 0.0, 0.0), (0.0, 1.5, 0.0)]
+    assert shadows.travel_from_samples({"handle": samples}, ppb=10.0).across == 15.0
+
+
+def test_a_diagonal_slide_counts_its_true_distance():
+    # Not max(u, v): 3-4-5, so the answer is 5 units, not 4.
+    samples = [(0.0, 0.0, 0.0), (0.0, 3.0, 4.0)]
+    assert shadows.travel_from_samples({"handle": samples}, ppb=1.0).across == 5.0
+
+
+def test_depth_and_in_plane_are_reported_separately():
+    samples = [(0.0, 0.0, 0.0), (2.0, 1.0, 0.0)]
+    travel = shadows.travel_from_samples({"cap": samples}, ppb=1.0)
+    assert (travel.across, travel.depth) == (1.0, 2.0)
+
+
+def test_travel_is_the_widest_single_object_not_the_average():
+    # A moving handle beside a static bracket in one collection: measuring
+    # their combined bounds would water the handle's travel down.
+    travel = shadows.travel_from_samples(
+        {
+            "bracket": [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "handle": [(0.0, 0.0, 0.0), (0.0, 6.0, 0.0)],
+        },
+        ppb=1.0,
+    )
+    assert travel.across == 6.0
+
+
+def test_a_single_frame_sample_cannot_move():
+    assert not shadows.travel_from_samples({"knob": [(9.0, 9.0, 9.0)]}, ppb=1.0).moves
