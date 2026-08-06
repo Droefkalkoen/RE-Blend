@@ -1,10 +1,13 @@
 """Per-element batch render: isolate, configure, render, stitch, verify (§5.1).
 
-For each element: only its collection renders (every other element collection
-is hidden), a temporary orthographic camera is derived from the registration
-empty, frames ``0…re_frames − 1`` render to a scratch directory, the stitcher
-builds the vertical strip, and the written file is *verified* — straight
-alpha, frame overflow, and dimensions — rather than trusted (risk §10.1).
+For each element: only its collection renders (what the other element
+collections do meanwhile is :mod:`reblend.render.shadows`' call — hidden,
+shadow-only caster, or shadow catcher, depending on the isolation setting and
+on who owns which shadow), a temporary orthographic camera is derived from the
+registration empty, frames ``0…re_frames − 1`` render to a scratch directory,
+the stitcher builds the vertical strip, and the written file is *verified* —
+straight alpha, frame overflow, and dimensions — rather than trusted
+(risk §10.1).
 
 All scene state the renderer touches is pushed before and popped after every
 element, whatever happens in between, so a failed render never leaves the
@@ -25,7 +28,7 @@ from mathutils import Vector
 from ..model import calibration, kinds, schema
 from ..project.png_meta import read_png_meta
 from ..project.validation import ERROR, WARNING, Finding
-from . import bpy_io, stitcher, validators
+from . import bpy_io, shadows, stitcher, validators
 
 __all__ = ["RenderResult", "RenderError", "render_element", "render_elements"]
 
@@ -53,11 +56,14 @@ class RenderResult:
 #: (§5.1 isolation). ``SHADOW`` keeps them in the render as shadow-only casters
 #: (invisible to the camera, still shadowing the active element, catching
 #: nothing) via Cycles object ray visibility; ``HIDDEN`` excludes them from the
-#: render entirely and is engine-agnostic.
-INACTIVE_SHADOW = "SHADOW"
-INACTIVE_HIDDEN = "HIDDEN"
+#: render entirely and is engine-agnostic. Per-element shadow *ownership*
+#: overrides both where the two disagree — :mod:`reblend.render.shadows` is
+#: the authority on the resulting roles.
+INACTIVE_SHADOW = shadows.INACTIVE_SHADOW
+INACTIVE_HIDDEN = shadows.INACTIVE_HIDDEN
 
-#: The only engine whose object ray visibility makes shadow-only isolation work.
+#: The only engine whose object flags make shadow-only casters and shadow
+#: catchers work.
 CYCLES_ENGINE = "CYCLES"
 
 
@@ -91,34 +97,45 @@ def _skip_reason(collection) -> str | None:
     )
 
 
-def _warn_shadow_engine(result, scene, collection, data, inactive_render) -> None:
-    """Warn if shadow-only isolation was asked for under a non-Cycles engine.
+def _warn_plan(result, scene, plan, data) -> None:
+    """Warn about a shadow plan the scene cannot actually deliver (§5.1).
 
-    ``SHADOW`` mode makes the other elements invisible-to-camera via Cycles
-    object ray visibility (§5.1); under EEVEE/Workbench those flags are ignored,
-    so the siblings would render *visible* and pollute the sheet. Only warn when
-    the choice actually bites — i.e. there is at least one other element to
-    isolate — so a single-element scene stays quiet.
+    Two ways it can fail quietly. The caster and catcher roles are Cycles
+    object flags: under EEVEE/Workbench they are ignored, so those collections
+    render *visible* and pollute the sheet. And an element that owns its shadow
+    needs a plate to catch it — with no backdrop element in the scene the
+    shadow simply is not in the sheet, which looks like nothing happened.
     """
-    if inactive_render != INACTIVE_SHADOW or scene.render.engine == CYCLES_ENGINE:
-        return
-    others = [
-        c
-        for c in _element_collections(scene)
-        if c is not collection and not _is_context_of(c, collection)
-    ]
-    if not others:
-        return
-    result.findings.append(
-        Finding(
-            WARNING,
-            "engine",
-            f"'Cast Shadows' isolation needs Cycles, but the render engine is "
-            f"'{scene.render.engine}' — the other elements will render visible "
-            "instead of shadow-only. Switch to Cycles, or use 'Hidden' isolation.",
-            subject=data.path,
+    roles = {role for _c, role in plan}
+    needed = roles & shadows.NEEDS_CYCLES
+    if needed and scene.render.engine != CYCLES_ENGINE:
+        wanted = (
+            "shadow catching" if shadows.ROLE_CATCHER in needed
+            else "'Cast Shadows' isolation"
         )
-    )
+        result.findings.append(
+            Finding(
+                WARNING,
+                "engine",
+                f"{wanted} needs Cycles, but the render engine is "
+                f"'{scene.render.engine}' — the other elements will render "
+                "visible instead. Switch to Cycles, or use 'Hidden' isolation.",
+                subject=data.path,
+            )
+        )
+    if (data.shadow_owner == kinds.SHADOW_ELEMENT
+            and shadows.ROLE_CATCHER not in roles):
+        result.findings.append(
+            Finding(
+                WARNING,
+                "shadow-owner",
+                "this element owns its cast shadow, but the scene has no "
+                "backdrop element for the shadow to fall on — the sheet will "
+                "have no shadow in it. Import the panel backdrop, or hand the "
+                "shadow back to the background",
+                subject=data.path,
+            )
+        )
 
 
 def render_elements(
@@ -189,10 +206,11 @@ def render_element(
 
     registration = _find_registration(collection)
     result = RenderResult(element=data.path)
-    _warn_shadow_engine(result, scene, collection, data, inactive_render)
+    plan = _isolation_plan(scene, collection, data, inactive_render)
+    _warn_plan(result, scene, plan, data)
 
     axis = Vector(view_axis) if view_axis is not None else VIEW_AXIS
-    with _element_scene_state(scene, collection, inactive_render):
+    with _element_scene_state(scene, plan):
         camera = _make_camera(scene, data, registration, ppb, axis)
         try:
             _configure_render(scene, data)
@@ -238,20 +256,54 @@ _SHADOW_ONLY_OFF = (
     "visible_transmission",
     "visible_volume_scatter",
 )
-_RAY_ATTRS = _SHADOW_ONLY_OFF + ("visible_shadow",)
+#: Everything an object-level role touches, so the restore covers all of it.
+_OBJ_ATTRS = _SHADOW_ONLY_OFF + ("visible_shadow", "is_shadow_catcher")
+
+
+def _isolation_plan(scene, active_collection, data, inactive_render):
+    """``[(collection, role)]`` for every collection in the isolation set.
+
+    The active element and its context collection render normally; what each
+    other collection does is :func:`reblend.render.shadows.sibling_role`,
+    which weighs the scene-wide isolation setting against the per-element
+    shadow owners on both sides.
+    """
+    active_owner = data.shadow_owner
+    plan = []
+    for c in _element_collections(scene):
+        if c is active_collection or _is_context_of(c, active_collection):
+            plan.append((c, shadows.ROLE_VISIBLE))
+            continue
+        kind, owner = _shadow_facts(c)
+        plan.append(
+            (c, shadows.sibling_role(active_owner, kind, owner, inactive_render))
+        )
+    return plan
+
+
+def _shadow_facts(collection) -> tuple[str, str]:
+    """One sibling's ``(kind, shadow owner)``, defaulted for a non-element.
+
+    Another element's context collection carries no ``re_*`` properties; it is
+    ordinary neighbouring geometry, so it takes the plain background-owner
+    treatment rather than being mistaken for a plate.
+    """
+    if not schema.is_element(collection):
+        return kinds.STATIC, kinds.SHADOW_BACKGROUND
+    try:
+        data = schema.props_to_data(collection)
+    except (KeyError, ValueError):
+        return kinds.STATIC, kinds.SHADOW_BACKGROUND
+    return data.kind, data.shadow_owner
 
 
 @contextlib.contextmanager
-def _element_scene_state(scene, active_collection, inactive_render="SHADOW"):
+def _element_scene_state(scene, plan):
     """Push everything the render touches; pop it however rendering ends.
 
-    The other RE Element collections are taken out of the visible image so
-    only the active element renders. ``inactive_render`` chooses how:
-
-    - ``"SHADOW"`` (default): they stay in the render but every object becomes
-      a shadow-only caster — invisible to the camera, still casting shadows on
-      the active element, catching none itself.
-    - ``"HIDDEN"``: they are excluded from the render outright.
+    ``plan`` is the ``(collection, role)`` list from :func:`_isolation_plan`;
+    this applies each role to real collections and objects and undoes it
+    afterwards, so a failed render never leaves the scene reconfigured.
     """
     saved_render = {a: getattr(scene.render, a) for a in _RENDER_ATTRS}
     saved_image = {a: getattr(scene.render.image_settings, a) for a in _IMAGE_ATTRS}
@@ -260,30 +312,29 @@ def _element_scene_state(scene, active_collection, inactive_render="SHADOW"):
     saved_camera = scene.camera
     saved_frame = scene.frame_current
 
-    siblings = _element_collections(scene)
-    saved_hide = {c.name: c.hide_render for c in siblings}
+    saved_hide = {c.name: c.hide_render for c, _role in plan}
     saved_vis: dict[str, dict[str, bool]] = {}
     try:
-        for c in siblings:
-            visible = c is active_collection or _is_context_of(c, active_collection)
-            if visible:
-                c.hide_render = False
-            elif inactive_render == "HIDDEN":
-                c.hide_render = True
-            else:  # SHADOW: keep the geometry in the render, shadow-only.
-                c.hide_render = False
-                for obj in c.all_objects:
-                    if obj.name in saved_vis:
-                        continue
-                    saved_vis[obj.name] = {a: getattr(obj, a) for a in _RAY_ATTRS}
+        for collection, role in plan:
+            collection.hide_render = role == shadows.ROLE_HIDDEN
+            if role not in (shadows.ROLE_CASTER, shadows.ROLE_CATCHER):
+                continue
+            for obj in collection.all_objects:
+                if obj.name in saved_vis:
+                    continue
+                saved_vis[obj.name] = {a: getattr(obj, a) for a in _OBJ_ATTRS}
+                if role == shadows.ROLE_CASTER:
                     for attr in _SHADOW_ONLY_OFF:
                         setattr(obj, attr, False)
                     obj.visible_shadow = True
+                else:  # CATCHER: transparent except where the shadow lands.
+                    obj.visible_camera = True
+                    obj.is_shadow_catcher = True
         yield
     finally:
-        for c in siblings:
-            if c.name in saved_hide:
-                c.hide_render = saved_hide[c.name]
+        for collection, _role in plan:
+            if collection.name in saved_hide:
+                collection.hide_render = saved_hide[collection.name]
         for name, attrs in saved_vis.items():
             obj = bpy.data.objects.get(name)
             if obj is not None:

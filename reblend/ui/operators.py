@@ -124,14 +124,18 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
         collection = bpy.data.collections.new(spec.path)
 
     # Fill/update the Lua-derived properties. User-owned properties
-    # (sweep, states, registration, preview frame) keep their existing values
-    # on update, and a frame size the user already chose is never clobbered
-    # by "unknown". A kept key that is *absent* still gets its default:
+    # (sweep, states, registration, preview frame, shadow owner) keep their
+    # existing values on update — shadow ownership included, because the
+    # kind-derived default is only a starting guess and re-import must not
+    # quietly move a shadow the designer has already placed. A frame size the
+    # user already chose is likewise never clobbered by "unknown". A kept key
+    # that is *absent* still gets its default:
     # data_to_props stamps the current re_schema, so every versioned property
     # must exist afterwards or the migration that would add it never runs.
     keep = set()
     if not is_new:
-        keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame"}
+        keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame",
+                "re_shadow_owner"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
     old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
@@ -357,6 +361,33 @@ def active_frame_size(context) -> tuple[int, int]:
         return (0, 0)
     return (int(collection.get("re_frame_w", 0)),
             int(collection.get("re_frame_h", 0)))
+
+
+def active_shadow_owner(context) -> str:
+    """The active element's shadow owner (§5.1), defaulted by kind.
+
+    Empty string when no element is active, so the panel can leave the field
+    out rather than show a choice that belongs to nothing.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return ""
+    return schema.props_to_data(collection).shadow_owner
+
+
+def set_active_shadow_owner(context, owner: str) -> None:
+    """Setter behind the panel's Shadow proxy: write it through to the element.
+
+    Only the property changes — nothing is re-rendered here. The choice takes
+    effect on the next render of this element (its own shadow arrives in its
+    sheet) *and* on the next render of the panel backdrop (its shadow stops
+    being baked there), which is why it is stored rather than acted on.
+    """
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    if owner in kinds.SHADOW_OWNERS:
+        collection["re_shadow_owner"] = owner
 
 
 def set_active_frame_size(context, w: int | None = None,

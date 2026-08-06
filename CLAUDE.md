@@ -17,7 +17,8 @@ Implementation has started with the Blender-independent layers. Repository conte
   (sandboxed Lua reading, patch-mode Lua writer + re-import merge, motherboard steps, PNG
   metadata, project link/import, SDK stock parts, validation engine), `model/` (versioned RE Element schema +
   migrations, kinds, state tables, calibration, rigs), `render/` (stitcher, panel compositor +
-  contact sheet, output validators, Blender I/O, batch renderer), `ui/` (N-panel, operators). Only
+  contact sheet, output validators, shadow-ownership policy, Blender I/O, batch renderer),
+  `ui/` (N-panel, operators). Only
   `model/rigs.py`, `render/bpy_io.py`, `render/renderer.py`, and `ui/*` import `bpy` (lazily
   via `reblend.register()`); everything else is pure Python under test.
 - `docs/sdk-gui-reference.md` — RE-Blend's transcription of the SDK 4.6.0 GUI documents
@@ -134,7 +135,7 @@ Planned module layout:
   calibration.
 - `render/` — render queue, per-element scene push/pop, strip stitcher (numpy over `bpy` image
   pixels, no external image dependency), overflow/alpha validators, flipbook/contact sheet, panel
-  compositor.
+  compositor, per-element shadow ownership (who casts, who catches, who sits a render out).
 - `ui/` — N-panel "RE-Blend" tab, element list with status badges, validation report, state playground.
 - `cli.py` — headless entry points.
 
