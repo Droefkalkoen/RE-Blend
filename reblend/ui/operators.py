@@ -61,6 +61,20 @@ def _project_root(context) -> Path:
     return Path(bpy.path.abspath(raw))
 
 
+def _poll_project(cls, context) -> bool:
+    """Shared ``poll`` for operators that need a linked project: grey the
+    button out (with a hover explanation) instead of erroring after the
+    click. Deliberately only the cheap string check — no file I/O in a poll,
+    it runs on every redraw. Execute-time checks stay, because a poll is
+    advisory when the operator is driven headlessly (§7)."""
+    scene = getattr(context, "scene", None)
+    settings = getattr(scene, "reblend", None) if scene is not None else None
+    if settings is None or not settings.project_root:
+        cls.poll_message_set("Link an RE project first (RE Project panel)")
+        return False
+    return True
+
+
 def _element_collections(scene) -> list[bpy.types.Collection]:
     """Every RE Element collection linked under the scene, once each.
 
@@ -124,8 +138,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
         collection = bpy.data.collections.new(spec.path)
 
     # Fill/update the Lua-derived properties. User-owned properties
-    # (sweep, states, registration, preview frame, shadow owner) keep their
-    # existing values on update — shadow ownership included, because the
+    # (sweep, rotor, states, registration, preview frame, shadow owner) keep
+    # their existing values on update — shadow ownership included, because the
     # kind-derived default is only a starting guess and re-import must not
     # quietly move a shadow the designer has already placed. A frame size the
     # user already chose is likewise never clobbered by "unknown". A kept key
@@ -134,8 +148,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
     # must exist afterwards or the migration that would add it never runs.
     keep = set()
     if not is_new:
-        keep = {"re_sweep_deg", "re_states", "re_registration", "re_preview_frame",
-                "re_shadow_owner"}
+        keep = {"re_sweep_deg", "re_rotor", "re_states", "re_registration",
+                "re_preview_frame", "re_shadow_owner"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
     old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
@@ -155,6 +169,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
     if is_new:
         table = state_tables.default_state_table(spec.kind, spec.frames)
         collection["re_states"] = table.to_json() if table else ""
+    # Frames may have changed (a sync accept), so re-clamp the preview slider.
+    _configure_preview_ui(collection)
 
     for panel in spec.panels:
         root = _panel_root(context, panel)
@@ -390,6 +406,56 @@ def set_active_shadow_owner(context, owner: str) -> None:
         collection["re_shadow_owner"] = owner
 
 
+def _configure_preview_ui(collection) -> None:
+    """Clamp the element's ``re_preview_frame`` slider to ``0..frames-1``.
+
+    A raw ID property has no UI range until one is written; without this the
+    Preview Frames slider scrubs into frames the sheet does not have (the
+    compositor clamps defensively, but the widget should not lie).
+    """
+    if "re_preview_frame" not in collection:
+        return
+    frames = max(int(collection.get("re_frames", 1)) - 1, 0)
+    try:
+        collection.id_properties_ui("re_preview_frame").update(
+            min=0, max=frames, soft_min=0, soft_max=frames)
+    except (TypeError, KeyError):
+        pass  # non-int legacy value; the load migration rewrites it
+
+
+def active_rotor(context) -> str:
+    """The active knob's recorded rotor name (``re_rotor``), "" when none."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return ""
+    return str(collection.get("re_rotor", ""))
+
+
+def set_active_rotor(context, name: str) -> None:
+    """Setter behind the Rig panel's Rotor picker: record which object spins."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    collection["re_rotor"] = str(name)
+
+
+def active_sweep_deg(context) -> float:
+    """The active knob's sweep in degrees (``re_sweep_deg``)."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return calibration.DEFAULT_SWEEP_DEG
+    return float(collection.get("re_sweep_deg", calibration.DEFAULT_SWEEP_DEG))
+
+
+def set_active_sweep_deg(context, value: float) -> None:
+    """Setter behind the Rig panel's Sweep field. Only the property changes;
+    the driver picks it up on the next Generate Rig."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    collection["re_sweep_deg"] = min(max(float(value), 1.0), 360.0)
+
+
 def set_active_frame_size(context, w: int | None = None,
                           h: int | None = None) -> None:
     """Setter behind the panel's Frame W/H proxies (§5.2).
@@ -442,8 +508,8 @@ def _delete_element(context, collection) -> list[str]:
             if cleared:
                 notes.append(f"removed {cleared} state f-curve(s)")
 
-    # Which object spins is the one thing the properties don't record (§4.3),
-    # so sweep the collection's own objects — where Generate Rig drives.
+    # Sweep every object, not just the recorded re_rotor — a renamed rotor or
+    # a pre-v4 element may carry a driver the name no longer reaches.
     if kinds.rig_for_kind(data.kind) == kinds.RIG_DRIVER:
         drivers = 0
         for obj in list(collection.objects):
@@ -531,6 +597,10 @@ class REBLEND_OT_import_project(bpy.types.Operator):
     bl_idname = "reblend.import_project"
     bl_label = "Import RE Project"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     reposition: bpy.props.BoolProperty(
         name="Reposition Elements",
@@ -657,6 +727,10 @@ class REBLEND_OT_validate(bpy.types.Operator):
     bl_idname = "reblend.validate"
     bl_label = "Validate"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     def execute(self, context):
         try:
             link = load_project(_project_root(context))
@@ -669,8 +743,7 @@ class REBLEND_OT_validate(bpy.types.Operator):
             view_transform=context.scene.view_settings.view_transform
         )
         report = validation.validate_link(link, elements, scene_info)
-        props.store_report(_settings(context), report.findings,
-                           source="validation")
+        props.store_validation_report(_settings(context), report.findings)
 
         if report.ok and not report.warnings:
             self.report({"INFO"}, "validation clean: no errors, no warnings")
@@ -815,6 +888,10 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
     bl_idname = "reblend.render_elements"
     bl_label = "Render Elements"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     scope: bpy.props.EnumProperty(
         name="Scope",
         items=(
@@ -851,7 +928,7 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
             view_axis=calibration.axis_vector(settings.camera_axis),
         )
         findings = [f for result in results for f in result.findings]
-        props.store_report(settings, findings, source="render")
+        props.store_render_report(settings, findings)
 
         failed = [r.element for r in results if not r.ok]
         warnings = sum(1 for f in findings if f.severity != validation.ERROR)
@@ -875,9 +952,11 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
 class REBLEND_OT_generate_rig(bpy.types.Operator):
     """(Re)generate the active element's rig from its re_* properties (§4.3).
 
-    Knobs: rotation driver on the active object (the rotating part), around
-    the registration empty's view axis. Multi-state kinds: the element's
-    state table applied as constant-interpolation keyframes.
+    Knobs: rotation driver on the element's recorded rotor (``re_rotor``, the
+    Rig panel's Rotor picker) — or the selected object as a fallback, which is
+    then recorded — around the registration empty's view axis. Multi-state
+    kinds: the element's state table applied as constant-interpolation
+    keyframes.
     """
 
     bl_idname = "reblend.generate_rig"
@@ -893,9 +972,9 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
         rig = kinds.rig_for_kind(data.kind)
 
         if rig == kinds.RIG_DRIVER:
-            rotor = context.active_object
+            rotor, problem = _resolve_rotor(context, collection)
             if rotor is None:
-                self.report({"ERROR"}, "select the knob's rotating part first")
+                self.report({"ERROR"}, problem)
                 return {"CANCELLED"}
             axis = self._knob_axis(context, collection)
             try:
@@ -909,6 +988,9 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
+            # Record the rotor so the rig is reproducible without a selection
+            # (Generate All Rigs, a re-rig after sync, a headless run).
+            collection["re_rotor"] = rotor.name
             self.report({"INFO"}, f"turntable driver on '{rotor.name}': "
                                   f"{data.frames} frames")
             return {"FINISHED"}
@@ -921,6 +1003,17 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
             try:
                 table = state_tables.StateTable.from_json(raw)
                 keys = table.compile()
+                if not keys:
+                    # A real failure, not a soft note: nothing would be keyed,
+                    # so the sheet would render every frame identically.
+                    # Headless callers need the CANCELLED; the panel disables
+                    # the button with the same hint anyway.
+                    self.report(
+                        {"ERROR"},
+                        "state table has named states but no actions — add "
+                        "actions in the State Table first",
+                    )
+                    return {"CANCELLED"}
                 stale = rigs.apply_state_table(table)
             except (ValueError, KeyError) as exc:
                 self.report({"ERROR"}, str(exc))
@@ -930,12 +1023,6 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                     {"WARNING"},
                     f"state table has {table.frames} states but re_frames = "
                     f"{data.frames} — fix before rendering",
-                )
-            elif not keys:
-                self.report(
-                    {"WARNING"},
-                    "state table has named states but no actions yet — add "
-                    "visibility/emission/transform actions to each state",
                 )
             else:
                 pruned = f", pruned {stale} stale key(s)" if stale else ""
@@ -948,6 +1035,31 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
 
     def _knob_axis(self, context, collection) -> tuple[float, float, float]:
         return _knob_axis(context, collection)
+
+
+def _resolve_rotor(context, collection):
+    """``(rotor, error)`` — the object Generate Rig should drive for a knob.
+
+    The recorded ``re_rotor`` wins (deterministic, works headlessly and in
+    bulk); the active object is the fallback that preserves the original
+    select-and-generate habit, and the caller records it on success so the
+    next run no longer depends on the selection. Resolution is scoped to the
+    element's own objects — a stale name must not grab an unrelated object
+    that happens to share it.
+    """
+    name = str(collection.get("re_rotor", ""))
+    if name:
+        rotor = collection.all_objects.get(name)
+        if rotor is not None:
+            return rotor, ""
+    selected = getattr(context, "active_object", None)
+    if selected is not None and selected.name in collection.all_objects:
+        return selected, ""
+    if name:
+        return None, (f"rotor '{name}' no longer exists in the element — "
+                      "pick it again in the Rig panel")
+    return None, ("no rotor recorded — pick the rotating part in the Rig "
+                  "panel (or select it) first")
 
 
 def _knob_axis(context, collection) -> tuple[float, float, float]:
@@ -973,10 +1085,10 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
 
     A rig is derived from ``re_frames``, so changing a frame count — or pulling
     new counts in from the Lua on sync — leaves rigs stale across the whole
-    scene, and a stale rig renders a wrong sheet without complaining. Knobs are
-    re-driven only where a rotation driver already exists, since which object
-    spins is the one thing the element properties don't record; knobs with no
-    driver yet are reported so they can be done by hand.
+    scene, and a stale rig renders a wrong sheet without complaining. Knobs
+    spin their recorded rotor (``re_rotor``); a pre-v4 knob that already
+    carries a driver has its rotor found and recorded from it. Knobs with
+    neither are reported so they can be set up in the Rig panel.
     """
 
     bl_idname = "reblend.generate_all_rigs"
@@ -998,7 +1110,8 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
                     rigged += done
                     skipped += not done
                     if not done:
-                        problems.append(f"{data.path}: no rotation driver to rebuild")
+                        problems.append(f"{data.path}: no rotor recorded — "
+                                        "set it in the Rig panel")
                     continue
                 stale, ok = self._reapply_states(collection, data)
                 pruned += stale
@@ -1020,7 +1133,15 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
         return {"FINISHED"}
 
     def _redrive_knob(self, context, collection, data) -> bool:
-        rotor = _driven_rotor(collection)
+        rotor = None
+        name = str(collection.get("re_rotor", ""))
+        if name:
+            rotor = collection.all_objects.get(name)
+        if rotor is None:
+            # Pre-v4 file (or a renamed rotor): an existing driver still says
+            # which object spins — use it, and record the name so this element
+            # never needs the fallback again.
+            rotor = _driven_rotor(collection)
         if rotor is None:
             return False
         rigs.ensure_turntable_driver(
@@ -1030,6 +1151,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
                                            calibration.DEFAULT_SWEEP_DEG)),
             axis=_knob_axis(context, collection),
         )
+        collection["re_rotor"] = rotor.name
         return True
 
     def _reapply_states(self, collection, data) -> tuple[int, bool]:
@@ -2076,6 +2198,10 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
     bl_idname = "reblend.export_patch"
     bl_label = "Export Layout (Patch Lua)"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     backup: bpy.props.BoolProperty(
         name="Keep a .bak copy",
         description="Copy device_2D.lua to device_2D.lua.bak before patching",
@@ -2202,6 +2328,10 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
     bl_idname = "reblend.sync_project"
     bl_label = "Sync With Project"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     def execute(self, context):
         try:
             link = load_project(_project_root(context))
@@ -2240,6 +2370,10 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
     bl_idname = "reblend.apply_sync"
     bl_label = "Apply Resolutions"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     def invoke(self, context, event):
         """Confirm before honouring any Delete resolutions.
@@ -2401,6 +2535,10 @@ class REBLEND_OT_purge_removed(bpy.types.Operator):
     bl_label = "Clean Up Removed Elements"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     def _removed_paths(self, context) -> list[str] | None:
         try:
             link = load_project(_project_root(context))
@@ -2525,12 +2663,14 @@ class REBLEND_OT_save_report(bpy.types.Operator):
     source: bpy.props.EnumProperty(
         name="Source",
         items=(
-            ("FINDINGS", "Validation / Render Report",
-             "The findings list shown in the Validation Report panel"),
+            ("VALIDATION", "Validation Report",
+             "The findings shown in the Validation panel"),
+            ("RENDER", "Render Report",
+             "The last render's QA findings (Render Report panel)"),
             ("SYNC", "Sync Log",
-             "The last Sync diff with its per-item resolutions"),
+             "The last Check for Differences diff with its per-item choices"),
         ),
-        default="FINDINGS",
+        default="VALIDATION",
     )
     fmt: bpy.props.EnumProperty(
         name="Format",
@@ -2547,14 +2687,17 @@ class REBLEND_OT_save_report(bpy.types.Operator):
     def invoke(self, context, event):
         settings = _settings(context)
         if self.source == "SYNC" and not len(settings.merge_items):
-            self.report({"ERROR"}, "no Sync diff recorded — run Sync first")
+            self.report({"ERROR"},
+                        "no diff recorded — run Check for Differences first")
             return {"CANCELLED"}
-        if self.source == "FINDINGS" and not len(settings.findings):
+        if self.source == "VALIDATION" and not len(settings.findings):
             self.report({"ERROR"}, "no report recorded — run Validate first")
             return {"CANCELLED"}
+        if self.source == "RENDER" and not len(settings.render_findings):
+            self.report({"ERROR"}, "no render report recorded — render first")
+            return {"CANCELLED"}
         if not self.filepath:
-            stem = ("reblend-sync" if self.source == "SYNC"
-                    else f"reblend-{settings.findings_source or 'validation'}")
+            stem = f"reblend-{self.source.lower()}"
             ext = "json" if self.fmt == "JSON" else "txt"
             from datetime import datetime
             self.filepath = f"//{stem}-{datetime.now():%Y%m%d}.{ext}"
@@ -2574,12 +2717,17 @@ class REBLEND_OT_save_report(bpy.types.Operator):
             content = render(rows, project_root=root,
                              addon_version=__version__, timestamp=timestamp)
         else:
-            rows, timestamp = settings.findings, settings.findings_time
+            if self.source == "RENDER":
+                rows, timestamp = (settings.render_findings,
+                                   settings.render_findings_time)
+                kind = "render"
+            else:
+                rows, timestamp = settings.findings, settings.findings_time
+                kind = "validation"
             render = (reporting.findings_json if self.fmt == "JSON"
                       else reporting.format_findings)
-            content = render(rows, kind=settings.findings_source or "validation",
-                             project_root=root, addon_version=__version__,
-                             timestamp=timestamp)
+            content = render(rows, kind=kind, project_root=root,
+                             addon_version=__version__, timestamp=timestamp)
         if not rows:
             self.report({"ERROR"}, "nothing recorded to save")
             return {"CANCELLED"}
@@ -2669,6 +2817,10 @@ class REBLEND_OT_preview_panel(bpy.types.Operator):
     bl_idname = "reblend.preview_panel"
     bl_label = "Preview Panel"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     def execute(self, context):
         settings = _settings(context)
         panel = settings.preview_panel
@@ -2730,6 +2882,10 @@ class REBLEND_OT_contact_sheet(bpy.types.Operator):
     bl_idname = "reblend.contact_sheet"
     bl_label = "Contact Sheet"
 
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
+
     columns: bpy.props.IntProperty(
         name="Columns",
         description="Grid columns; 0 picks a near-square layout",
@@ -2758,6 +2914,10 @@ class REBLEND_OT_flipbook(bpy.types.Operator):
 
     bl_idname = "reblend.flipbook"
     bl_label = "Flipbook"
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     def execute(self, context):
         sheet_source = _active_element_sheet(self, context)
@@ -2814,6 +2974,10 @@ class REBLEND_OT_launch_tool(bpy.types.Operator):
 
     bl_idname = "reblend.launch_tool"
     bl_label = "Launch SDK Tool"
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     tool: bpy.props.EnumProperty(
         name="Tool",
@@ -2895,6 +3059,10 @@ class REBLEND_OT_install_sdk_parts(bpy.types.Operator):
     bl_idname = "reblend.install_sdk_parts"
     bl_label = "Install SDK Parts"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     overwrite: bpy.props.BoolProperty(
         name="Overwrite Existing",
@@ -3039,6 +3207,10 @@ class REBLEND_OT_reference_images(bpy.types.Operator):
     bl_idname = "reblend.reference_images"
     bl_label = "Add Reference Images"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context)
 
     def execute(self, context):
         try:

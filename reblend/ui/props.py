@@ -256,14 +256,17 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         ),
         default=lua_reader.PANELS[0],
     )
+    #: The last Validate report. Render QA findings live in their own store
+    #: (``render_findings``) so a render can never silently overwrite the
+    #: validation report the designer is working through, or vice versa.
     findings: bpy.props.CollectionProperty(type=REBLEND_PG_finding)
     findings_index: bpy.props.IntProperty(default=0)
+    findings_time: bpy.props.StringProperty(default="")
+    #: The last render's QA findings (per-sheet alpha/overflow/write checks).
+    render_findings: bpy.props.CollectionProperty(type=REBLEND_PG_finding)
+    render_findings_time: bpy.props.StringProperty(default="")
     merge_items: bpy.props.CollectionProperty(type=REBLEND_PG_merge_item)
     merge_index: bpy.props.IntProperty(default=0)
-    #: What filled ``findings`` and when — validate and the render queue share
-    #: the store, so the panel (and a saved report) must say which one it was.
-    findings_source: bpy.props.StringProperty(default="")
-    findings_time: bpy.props.StringProperty(default="")
     sync_time: bpy.props.StringProperty(default="")
     # Live frame-size editing (§5.2): get/set proxies over the active
     # element's re_frame_w/h (raw IDProperties cannot sit in layout.prop).
@@ -296,6 +299,43 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         get=lambda self: _active_shadow_owner(),
         set=lambda self, value: _set_active_shadow_owner(value),
     )
+    # Knob rig inputs (§4.3), proxied over the active element's re_rotor /
+    # re_sweep_deg the same way Frame W/H proxy re_frame_w/h.
+    active_rotor: bpy.props.StringProperty(
+        name="Rotor",
+        description="The knob's rotating part — Generate Rig drives its "
+                    "rotation (frame 0 = minimum, last frame = maximum). "
+                    "Recorded on the element (re_rotor), so the rig can be "
+                    "rebuilt any time without reselecting",
+        get=lambda self: _active_rotor(),
+        set=lambda self, value: _set_active_rotor(value),
+    )
+    active_sweep_deg: bpy.props.FloatProperty(
+        name="Sweep",
+        description="The knob's rotation sweep in degrees, centred on the "
+                    "rest pose: −sweep/2 at frame 0 to +sweep/2 at the last "
+                    "frame (§4.3). 300° is the usual Reason knob",
+        min=1.0,
+        max=360.0,
+        get=lambda self: _active_sweep_deg(),
+        set=lambda self, value: _set_active_sweep_deg(value),
+    )
+    re2drender_output: bpy.props.EnumProperty(
+        name="Output",
+        description="Which asset set RE2DRender produces (its third "
+                    "argument). Run without it the tool renders only the "
+                    "legacy lo-res set, which Reason/Recon 12+ do not use",
+        items=(
+            ("hi-res-only", "Hi-res only",
+             "Hi-res form only (Reason/Recon 12+); skips the lo-res pass — "
+             "the fast choice while iterating"),
+            ("hi-res", "Hi-res + lo-res",
+             "Both forms — what a submission build needs"),
+            ("lo-res", "Lo-res only (legacy)",
+             "Omit the argument entirely: legacy lo-res form only"),
+        ),
+        default="hi-res-only",
+    )
 
 
 def _active_frame_size() -> tuple[int, int]:
@@ -325,24 +365,55 @@ def _set_active_shadow_owner(index: int) -> None:
         operators.set_active_shadow_owner(bpy.context, _SHADOW_OWNER_ITEMS[index][0])
 
 
+def _active_rotor() -> str:
+    from . import operators  # local: operators imports props at module load
+
+    return operators.active_rotor(bpy.context)
+
+
+def _set_active_rotor(name: str) -> None:
+    from . import operators  # local: operators imports props at module load
+
+    operators.set_active_rotor(bpy.context, name)
+
+
+def _active_sweep_deg() -> float:
+    from . import operators  # local: operators imports props at module load
+
+    return operators.active_sweep_deg(bpy.context)
+
+
+def _set_active_sweep_deg(value: float) -> None:
+    from . import operators  # local: operators imports props at module load
+
+    operators.set_active_sweep_deg(bpy.context, value)
+
+
 def _timestamp() -> str:
     from datetime import datetime
 
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def store_report(settings: REBLEND_PG_settings, findings,
-                 source: str = "validation") -> None:
-    settings.findings.clear()
-    settings.findings_source = source
-    settings.findings_time = _timestamp()
+def _fill_findings(collection, findings) -> None:
+    collection.clear()
     for finding in findings:
-        row = settings.findings.add()
+        row = collection.add()
         row.severity = finding.severity
         row.code = finding.code
         row.message = finding.message
         row.subject = finding.subject
         row.panel = finding.panel
+
+
+def store_validation_report(settings: REBLEND_PG_settings, findings) -> None:
+    _fill_findings(settings.findings, findings)
+    settings.findings_time = _timestamp()
+
+
+def store_render_report(settings: REBLEND_PG_settings, findings) -> None:
+    _fill_findings(settings.render_findings, findings)
+    settings.render_findings_time = _timestamp()
 
 
 def store_merge_items(settings: REBLEND_PG_settings, items) -> None:

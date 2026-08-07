@@ -429,12 +429,8 @@ class REBLEND_PT_validation(bpy.types.Panel):
             layout.label(text="No report yet — run Validate", icon="INFO")
             return
 
-        # Validate and the render queue share this store, overwriting each
-        # other — the header says which one produced what's on screen.
-        source = ("Render QA" if settings.findings_source == "render"
-                  else "Validation")
-        when = f" — {settings.findings_time}" if settings.findings_time else ""
-        layout.label(text=f"{source}{when}", icon="INFO")
+        if settings.findings_time:
+            layout.label(text=f"Validated {settings.findings_time}", icon="INFO")
         errors = sum(1 for f in findings if f.severity == "error")
         layout.label(
             text=f"{errors} error(s), {len(findings) - errors} warning(s)",
@@ -480,8 +476,8 @@ class REBLEND_PT_validation(bpy.types.Panel):
                     for line in _wrap(f"{prefix}{finding.message}"):
                         box.label(text=line, icon="BLANK1")
 
-        layout.operator("reblend.save_report", text="Save Report…",
-                        icon="FILE_TICK").source = "FINDINGS"
+        layout.operator("reblend.save_report", text="Save Validation Report…",
+                        icon="FILE_TICK").source = "VALIDATION"
 
 
 def _group_by_code(findings):

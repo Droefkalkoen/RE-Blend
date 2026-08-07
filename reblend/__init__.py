@@ -48,6 +48,7 @@ def _migrate_all() -> None:
     import bpy
 
     from .model import schema
+    from .ui import operators
 
     # bpy.data, not a scene walk: migrations must reach every element in the
     # file, including collections not linked under any scene.
@@ -57,6 +58,10 @@ def _migrate_all() -> None:
                 schema.migrate(collection)
             except ValueError as exc:
                 print(f"[RE-Blend] {collection.name}: {exc}")
+                continue
+            # UI metadata is not part of the schema, so re-derive it on every
+            # load: the preview-frame slider clamps to the element's frames.
+            operators._configure_preview_ui(collection)
 
 
 def _migrate_open_file():
