@@ -127,6 +127,7 @@ def validate_project(
     _check_placement_drift(report, elements)
     _check_shadow_owner(report, elements)
     _check_state_tables(report, elements)
+    _check_rotors(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
         _check_files(report, elements, gui2d_dir)
@@ -412,7 +413,7 @@ def _check_placement_drift(
                 f"moved {dx:+.0f}, {dy:+.0f} px in the scene: "
                 f"({derived.x:.0f}, {derived.y:.0f}) vs "
                 f"({stored.x:.0f}, {stored.y:.0f}) in device_2D.lua — "
-                "Export Layout writes it, Re-import & Reposition discards it",
+                "Write Layout to Lua writes it, Re-import & Reposition discards it",
                 subject=element.path,
                 panel=stored.panel,
             )
@@ -457,8 +458,8 @@ def _check_shadow_owner(
                 f"geometry slides {travel.across:.0f} px across the panel "
                 f"between frames, but its shadow is baked into the background "
                 "— the baked shadow stays where frame 0 put it while the art "
-                "moves away from it. Set Shadow to 'This Element' so the "
-                "shadow travels in the sheet",
+                "moves away from it. Set Cast Shadow Into to 'Own Sheet' so "
+                "the shadow travels in the sheet",
                 subject=element.path,
             )
         elif travel.depth > TRAVEL_TOLERANCE_PX:
@@ -469,7 +470,7 @@ def _check_shadow_owner(
                 f"between frames (towards or away from the viewer) with its "
                 "shadow baked into the background — the real shadow would "
                 "shift and soften, the baked one cannot. Usually fine for a "
-                "button cap; set Shadow to 'This Element' if the shift shows",
+                "button cap; set Cast Shadow Into to 'Own Sheet' if the shift shows",
                 subject=element.path,
             )
 
@@ -533,6 +534,31 @@ def _check_state_tables(report: Report, elements: Sequence[schema.ElementData]) 
                 f"{state_tables.describe_channel(channel)} is not evenly spaced "
                 f"({spacing}) — a sequence_fader's handle must travel the same "
                 "distance between every frame; use Spread Between Extremes",
+                subject=element.path,
+            )
+
+
+def _check_rotors(report: Report, elements: Sequence[schema.ElementData]) -> None:
+    """The knob counterpart of the state-table check: is anything rigged to
+    spin? A knob with no recorded rotor has no rotation driver, so all of its
+    frames render identically — and nothing downstream can tell, because a
+    61-frame sheet of identical frames is structurally valid everywhere.
+
+    ``rotor is None`` means the source never recorded one (spec-derived data
+    has no scene to ask — the ``frame_travel`` convention) and stays quiet;
+    ``""`` means the element was read and no rotor is recorded yet.
+    """
+    for element in elements:
+        if kinds.rig_for_kind(element.kind) != kinds.RIG_DRIVER:
+            continue
+        if element.rotor is None or element.rotor:
+            continue
+        if element.frames > 1:
+            report.add(
+                WARNING,
+                "rotor",
+                "no rotor recorded — pick the rotating part in the Rig panel "
+                "and Generate Rig, or every frame renders identically",
                 subject=element.path,
             )
 

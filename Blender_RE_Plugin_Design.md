@@ -79,7 +79,7 @@ the placement layer of it.
    with placeholder offsets and final frame counts. Designer *imports* the project:
    RE-Blend builds a guide layout in Blender (panel plane, per-control bounding boxes at
    the declared offsets/sizes, rigs pre-configured with the declared frame counts).
-   Designer models/materials the hardware inside those boxes and hits "Render All" —
+   Designer models/materials the hardware inside those boxes and hits "Render All Sheets" —
    correct sheets land in `GUI2D/`.
 3. **Iteration**: designer nudges a knob's look or moves a control; RE-Blend re-renders
    only the dirty elements and (if the control moved) updates its `offset` in
@@ -103,8 +103,8 @@ there RE-Blend locates and parses:
   stepped selector, booleans, etc. Used only for validation (a `sequence_fader` bound to
   an 8-step property whose sheet declares `frames = 3` is an error worth flagging).
 
-Parsed data is cached on the scene; a **Sync** operator re-reads and reports drift
-(see §6).
+Parsed data is cached on the scene; a **Check for Differences** operator re-reads and
+reports drift (see §6).
 
 ### 4.2 The RE Element (the central object)
 
@@ -122,6 +122,7 @@ carrying RE-Blend custom properties:
 | `re_offset_x`, `re_offset_y` | Placement in panel pixels (top-left origin, +y down) |
 | `re_registration` | Reference to the element's **registration empty** (see below) |
 | `re_shadow_owner` | Where the element's cast shadow is rendered: `background` (baked into the panel plate) or `element` (into its own sheet, travelling with the art) — see §5.1 |
+| `re_rotor` | The name of the knob's rotating object. Recorded the first time a rotor is identified (the Rig panel's picker, a selection at Generate Rig, or an existing driver found by Generate All Rigs), so knob rigs are reproducible without a selection — in bulk and headlessly |
 
 The **registration empty** is a 3D empty marking the element's registration point (for
 knobs: the rotation axis). The per-element render camera is derived from it, which makes
@@ -139,9 +140,10 @@ The designer binds control state to scene frames — RE-Blend's central idea, ma
 the designer already thinks ("frame 0 = knob at minimum"):
 
 - **Knobs** (`re_kind = knob`): RE-Blend auto-creates a rotation driver on the knob's
-  rotating part: scene frame 0 → min angle, frame `re_frames − 1` → max angle, linear,
-  around the registration empty's axis. Default sweep −150°…+150° (300°), configurable
-  per element. Changing `re_frames` re-generates the driver — frame count can never
+  rotating part (recorded as `re_rotor`, so the rig can be rebuilt without a selection):
+  scene frame 0 → min angle, frame `re_frames − 1` → max angle, linear, around the
+  registration empty's axis. Default sweep −150°…+150° (300°), configurable per element
+  in the Rig panel. Changing `re_frames` re-generates the driver — frame count can never
   silently diverge from the rig.
 - **Multi-state controls** (buttons, fader handles, selectors, lamps): a **state table**
   on the element maps each sprite frame to a named state, and each state to a set of
@@ -393,9 +395,12 @@ drift apart silently.
 Re-running Import on a linked scene performs a **sync**: new nodes appear as new
 placeholder elements, removed nodes are flagged (never deleted automatically — each
 can be resolved as *keep* or as an explicit, confirmed *delete* that also sweeps the
-element's registration empty, guide boxes and rig; a bulk "clean up removed elements"
+element's registration empty, guide boxes and rig; a bulk *Delete Orphaned Elements*
 action deletes all of them after one confirmation), and changed offsets/frames/sizes
-are listed with per-item *accept theirs / keep mine* resolution.
+are listed with a per-item accept-theirs / keep-mine choice (drawn as *Use Project's /
+Keep Scene's*). The Sync & Export panel stages this as Check → Resolve → Write: the
+read-only diff (*Check for Differences*) first, the per-item choices and *Apply
+Choices* second, and the Lua write (*Write Layout to Lua*, §6.2) last.
 
 An element's registration empty **is** its position, so dragging one is a layout edit
 that lives only in the scene until an export writes it out. That drift is first-class:
@@ -534,8 +539,13 @@ opaque binary drop.
     resolution, colour management), strip stitcher (numpy over `bpy` image pixels — no
     external image dependency), overflow/alpha validators, flipbook/contact sheet,
     panel compositor.
-  - `ui/` — N-panel tab ("RE-Blend"), element list with status badges (synced / dirty /
-    missing / error), validation report, state playground.
+  - `ui/` — N-panel tab ("RE-Blend"), its panels ordered the way the work runs:
+    project setup → element list (with status badges: active / orphaned / moved /
+    unsized — per-element "synced/dirty" tracking is M3, with the render manifest) →
+    active element with its State Table and, below it, the Rig sub-panel → render (with
+    its QA report) → validation → preview/state playground → sync & export, staged
+    Check → Resolve → Write. Buttons whose preconditions aren't met are disabled with
+    an adjacent explanation rather than erroring after the click.
   - `cli.py` — headless entry points (§7).
 - **No SDK code or assets are bundled.** RE-Blend points at tool *paths* the user
   configures per machine (RE2DRender/RE2DPreview launch is optional convenience). This

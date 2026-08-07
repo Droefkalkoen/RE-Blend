@@ -49,7 +49,7 @@ RE-Blend's answer is to prevent these mismatches:
 - **Import an existing project** *(landed, M1)*: parse `device_2D.lua` / `hdgui_2D.lua`, build a
   guide layout in Blender — panel planes, per-control bounding boxes at the declared offsets and
   sizes, rigs pre-configured with the declared frame counts. Model your hardware inside the
-  boxes, hit Render All, correct sheets land in `GUI2D/`.
+  boxes, hit Render All Sheets, correct sheets land in `GUI2D/`.
 - **Write changes back to Lua** *(landed, M2)*: placement offsets and frame counts,  via anchored
   patch edits that leave everything else in the file intact. If an edit is ambiguous, RE-Blend 
   refuses with an error. Re-running import against changed Lua becomes a merge: per-item 
@@ -85,18 +85,21 @@ everything onto the new settings.
 ### 2. Set frame sizes
 
 The RE Lua never stores per-frame pixel size, so fresh imports are unsized until you decide
-(existing sheets on disk are measured automatically). Use **Set All Missing Sizes** in the
-element list, or the per-element *Frame W/H* fields. Keep both dimensions **multiples of 5** —
+(existing sheets on disk are measured automatically). Use **Fill Missing Sizes** at the top
+of the **Elements** panel, or the per-element *Frame W/H* fields. Keep both dimensions **multiples of 5** —
 RE2DRender silently reframes sheets that aren't (in SDK v4.x.x).
 
 ### 3. Model and rig
 
-Model each control inside its guide box. For a knob, select the rotating part and click
-**Generate Rig**: scene frame 0 becomes the minimum position, frame N−1 the maximum, spinning
-about the registration empty (sweep configurable via `re_sweep_deg`). For buttons, faders,
-selectors, and lamps, build the **State Table**: add actions (visibility, emission strength or
-colour, a location axis, a shape key), set each state's value, and Generate Rig compiles them to
-constant-interpolation keyframes — scrubbing the timeline previews exactly the discrete sheet.
+Model each control inside its guide box. For a knob, pick the rotating part in the **Rig**
+sub-panel's *Rotor* field (or just select it) and click **Generate Rig**: scene frame 0 becomes
+the minimum position, frame N−1 the maximum, spinning about the registration empty through the
+*Sweep* angle. The choice is recorded on the element, so **Generate All Rigs** (in the Elements
+panel) can rebuild every rig after a frame count changes. For buttons, faders, selectors, and
+lamps, build the **State Table**: add actions (visibility, emission strength or colour, a
+location axis, a shape key), set each state's value, and **Generate Rig** — below the table,
+disabled until it has something to compile — turns them into constant-interpolation keyframes;
+scrubbing the timeline previews exactly the discrete sheet.
 
 Values don't have to be typed. **Capture From Scene** (eyedropper) stores whatever the object
 currently holds, so a fader detent is placed by moving it in the viewport. **Spread Between
@@ -117,16 +120,18 @@ if a path field stays red after you wire one up.
 
 ### 4. Render and validate
 
-**Render All** (or **Render Active**) isolates each element, renders frames 0…N−1 through a
+**Render All Sheets** (or **Render Active Sheet**, in the **Render** panel) isolates each element, renders frames 0…N−1 through a
 camera derived from its registration empty, stitches the vertical strip, and writes
 `GUI2D/<path>.png` — then *verifies* the written file: straight alpha, 8-bit RGBA, exact
-dimensions, and art bleeding past the frame bounds. **Validate** runs the full cross-check
-against the Lua and reports errors and warnings in the panel.
+dimensions, and art bleeding past the frame bounds — findings land in the **Render Report**
+sub-panel. **Validate** (top of the **Validation** panel) runs the full cross-check against
+the Lua and reports errors and warnings right below the button. The two reports have separate
+stores, so a render never overwrites a validation report or vice versa.
 
 ### 5. Preview, play, launch
 
 In **Preview & QA**, pick a panel and click **Preview** to composite the rendered sheets at
-their declared offsets without leaving Blender. The **State Playground** sliders choose which 
+their declared offsets without leaving Blender. The **Preview Frames** sliders choose which 
 frame each element shows (selector at step 3, lamp lit…). **Contact Sheet** lays every frame 
 of the active element out as a grid; **Flipbook** loads the strip as a playable sequence in 
 the Image Editor. **Run RE2DRender / RE2DPreview** close the real loop (render output lands in 
@@ -134,19 +139,22 @@ the Image Editor. **Run RE2DRender / RE2DPreview** close the real loop (render o
 
 ### 6. Write back
 
-Moved a control? Drag its registration empty and click **Export Layout (Patch Lua)**. RE-Blend
-rewrites *only* the `offset`/`frames` number literals of nodes it knows, verifies the patched
-file by re-parsing it before replacing anything, and refuses when changes are ambiguous. It
-shows every value it's about to change and asks before overwriting, with an optional `.bak`.
+The **Sync & Export** panel is staged in the order the round-trip runs. **Step 1 — Check**:
+**Check for Differences** reads the project's Lua and lists what's new, removed, or different,
+changing nothing on either side. **Step 2 — Resolve**: each difference carries a *Use Project's
+/ Keep Scene's* choice (*Keep / Delete* for removed nodes); **Apply Choices** brings accepted
+changes into the scene through the same path a full import uses. **Step 3 — Write**: moved a
+control? Drag its registration empty — the panel counts unexported moves — and click **Write
+Layout to Lua**. RE-Blend rewrites *only* the `offset`/`frames` number literals of nodes it
+knows, verifies the patched file by re-parsing it before replacing anything, and refuses when
+changes are ambiguous. It shows every value it's about to change and asks before overwriting,
+with an optional `.bak`.
 
-A dragged empty is a real layout edit, so it's tracked as one: the Sync panel counts elements
-that have moved since the last export, validation reports each one with its pixel delta, and
-layout checks run against where the element now sits. **Re-import & Reposition** discards those
-moves by definition — so it names everything it would overwrite and asks first.
-
-If the Lua changed upstream, **Sync With Project** lists what's new, removed, or different, 
-with per-item *Theirs / Mine* resolution; **Apply Resolutions** brings accepted changes in 
-through the same path a full import uses.
+A dragged empty is a real layout edit, so it's tracked as one: the write step counts elements
+that have moved since the last export, the element list badges them, validation reports each
+one with its pixel delta, and layout checks run against where the element now sits.
+**Re-import & Reposition** discards those moves by definition — so it names everything it
+would overwrite and asks first.
 
 ## What it doesn't do
 

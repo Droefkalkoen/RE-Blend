@@ -119,3 +119,36 @@ def test_merge_json_round_trips():
 
 def test_empty_merge_log_says_in_sync():
     assert "in sync" in reporting.format_merge([])
+
+
+def test_group_findings_by_code_preserves_first_seen_order():
+    findings = [
+        Finding("warning", "frame-size", "unsized", subject="Knob"),
+        Finding("error", "missing-art", "missing", subject="Lamp"),
+        Finding("warning", "frame-size", "unsized", subject="Fader"),
+    ]
+    groups = reporting.group_findings_by_code(findings)
+    assert [key for key, _rows in groups] == [
+        ("warning", "frame-size"), ("error", "missing-art")]
+    assert [f.subject for f in groups[0][1]] == ["Knob", "Fader"]
+
+
+def test_group_findings_splits_same_code_by_severity():
+    # shadow-owner is an error across the camera plane, a warning along the
+    # camera axis — the same code must not merge across severities.
+    findings = [
+        Finding("error", "shadow-owner", "slides", subject="Fader"),
+        Finding("warning", "shadow-owner", "depth", subject="Button"),
+    ]
+    groups = reporting.group_findings_by_code(findings)
+    assert [key for key, _rows in groups] == [
+        ("error", "shadow-owner"), ("warning", "shadow-owner")]
+
+
+def test_wrap_text_respects_width_and_keeps_long_words_whole():
+    lines = reporting.wrap_text("aa bb cc dd", width=5)
+    assert lines == ["aa bb", "cc dd"]
+    # A single word longer than the width stays on its own line, unbroken.
+    assert reporting.wrap_text("supercalifragilistic", width=5) == [
+        "supercalifragilistic"]
+    assert reporting.wrap_text("") == []
