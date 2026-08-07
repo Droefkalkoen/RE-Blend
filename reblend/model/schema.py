@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 #: Current schema version. Bump on any property change and add a migration.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Property names and their defaults at the current schema version.
 DEFAULTS: dict[str, Any] = {
@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
     "re_offset_y": 0,
     "re_registration": "",    # name of the element's registration empty (§4.2)
     "re_sweep_deg": 300.0,    # knob sweep, -sweep/2..+sweep/2 (§4.3)
+    "re_rotor": "",           # name of the knob's rotating object ("" = not recorded)
     "re_states": "",          # state table JSON (state_tables module), "" = none
     "re_placements": "[]",    # JSON list of [panel, node, x, y]
     "re_preview_frame": 0,    # frame shown in the panel preview (§5.3)
@@ -120,6 +121,12 @@ class ElementData:
     #: the kind's default, so this always names a real choice once the
     #: dataclass exists — the renderer has no "undecided" case to handle.
     shadow_owner: str = ""
+    #: The name of the knob's rotating object (``re_rotor``), so Generate Rig
+    #: is reproducible without a selection. ``None`` means the source never
+    #: recorded one — spec-derived data has no scene to ask, and the checks
+    #: that care stay quiet (the ``frame_travel`` convention). ``""`` is a
+    #: real answer: the element was read and no rotor is recorded yet.
+    rotor: "str | None" = None
     #: Where the *scene* currently puts the element, read back from its
     #: registration empty. Empty unless the Blender side filled it in.
     #:
@@ -230,6 +237,18 @@ def _add_shadow_owner(props: MutableMapping[str, Any]) -> None:
         props["re_shadow_owner"] = kinds.SHADOW_BACKGROUND
 
 
+@_migration(3)
+def _add_rotor(props: MutableMapping[str, Any]) -> None:
+    """v3 → v4: the knob's rotating part joins the schema (``re_rotor``).
+
+    Old files start with it unrecorded; the Blender side backfills the name
+    the first time Generate Rig (via selection) or Generate All Rigs (via an
+    existing driver) identifies the rotor.
+    """
+    if "re_rotor" not in props:
+        props["re_rotor"] = ""
+
+
 def migrate(props: MutableMapping[str, Any]) -> bool:
     """Bring an element's properties up to :data:`SCHEMA_VERSION` in place.
 
@@ -275,6 +294,7 @@ def data_to_props(data: ElementData) -> dict[str, Any]:
             [[p.panel, p.node, p.x, p.y] for p in data.placements]
         ),
         re_shadow_owner=data.shadow_owner,
+        re_rotor=data.rotor or "",
     )
     return props
 
@@ -319,4 +339,5 @@ def props_to_data(props: MutableMapping[str, Any]) -> ElementData:
         placements=tuple(placements),
         states=str(working.get("re_states", "")),
         shadow_owner=str(working.get("re_shadow_owner", "")),
+        rotor=str(working.get("re_rotor", "")),
     )

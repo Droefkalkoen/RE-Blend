@@ -44,6 +44,18 @@ def test_migrate_v2_pins_shadow_owner_to_the_background():
     assert props["re_shadow_owner"] == "background"
 
 
+def test_migrate_v3_adds_rotor():
+    # An M2-era element: full v3 property set, no re_rotor. It starts
+    # unrecorded; the Blender side backfills the name at first rig time.
+    props = dict(schema.DEFAULTS)
+    props["re_schema"] = 3
+    props["re_kind"] = "knob"
+    del props["re_rotor"]
+    assert schema.migrate(props) is True
+    assert props["re_schema"] == schema.SCHEMA_VERSION
+    assert props["re_rotor"] == ""
+
+
 def test_migrate_current_version_is_a_noop():
     props = dict(schema.DEFAULTS)
     assert schema.migrate(props) is False
@@ -71,6 +83,10 @@ def _sample_data():
             Placement("front", "lamp_signal", 300, 100),
             Placement("front", "lamp_silence", 330, 100),
         ),
+        # Properties always carry re_rotor, so reading them back yields ""
+        # (recorded as absent), never None (unknown) — say so explicitly to
+        # keep the round-trip comparison exact.
+        rotor="",
     )
 
 
@@ -158,6 +174,23 @@ def test_states_round_trip_through_props():
     props = dict(schema.DEFAULTS)
     props.update(re_node="knob_a", re_path="Knob", re_states='{"states": []}')
     assert schema.props_to_data(props).states == '{"states": []}'
+
+
+def test_rotor_round_trips_through_props():
+    data = ElementData(node="knob_a", path="Knob", kind="knob", rotor="Rotor.001")
+    props = schema.data_to_props(data)
+    assert props["re_rotor"] == "Rotor.001"
+    assert schema.props_to_data(props).rotor == "Rotor.001"
+
+
+def test_unknown_rotor_persists_as_recorded_absent():
+    # Spec-derived data never knows the rotor (None); once written to props
+    # and read back it is "" — a real answer: read, and none recorded yet.
+    data = ElementData(node="knob_a", path="Knob", kind="knob")
+    assert data.rotor is None
+    props = schema.data_to_props(data)
+    assert props["re_rotor"] == ""
+    assert schema.props_to_data(props).rotor == ""
 
 
 def test_panels_deduplicate_in_order():

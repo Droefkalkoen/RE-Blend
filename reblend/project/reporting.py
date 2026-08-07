@@ -20,7 +20,38 @@ __all__ = [
     "findings_json",
     "format_merge",
     "merge_json",
+    "group_findings_by_code",
+    "wrap_text",
 ]
+
+
+def group_findings_by_code(findings: Iterable[Any]) -> list[tuple[tuple[str, str], list[Any]]]:
+    """Group findings by ``(severity, code)``, preserving first-seen order.
+
+    Returns ``((severity, code), [findings])`` pairs so a report can show one
+    box per code with a count, instead of one box per finding — an unsized
+    fresh import fires one frame-size warning per element, and a wall of
+    identical findings must not bury the ones that differ.
+    """
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for finding in findings:
+        groups.setdefault((finding.severity, finding.code), []).append(finding)
+    return list(groups.items())
+
+
+def wrap_text(text: str, width: int = 55) -> list[str]:
+    """Word-wrap ``text`` for UIs that cannot (Blender labels don't wrap)."""
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > width and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
 
 
 def _header(title: str, project_root: str, addon_version: str,

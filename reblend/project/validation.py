@@ -127,6 +127,7 @@ def validate_project(
     _check_placement_drift(report, elements)
     _check_shadow_owner(report, elements)
     _check_state_tables(report, elements)
+    _check_rotors(report, elements)
     _check_frame_geometry(report, elements)
     if gui2d_dir is not None:
         _check_files(report, elements, gui2d_dir)
@@ -533,6 +534,31 @@ def _check_state_tables(report: Report, elements: Sequence[schema.ElementData]) 
                 f"{state_tables.describe_channel(channel)} is not evenly spaced "
                 f"({spacing}) — a sequence_fader's handle must travel the same "
                 "distance between every frame; use Spread Between Extremes",
+                subject=element.path,
+            )
+
+
+def _check_rotors(report: Report, elements: Sequence[schema.ElementData]) -> None:
+    """The knob counterpart of the state-table check: is anything rigged to
+    spin? A knob with no recorded rotor has no rotation driver, so all of its
+    frames render identically — and nothing downstream can tell, because a
+    61-frame sheet of identical frames is structurally valid everywhere.
+
+    ``rotor is None`` means the source never recorded one (spec-derived data
+    has no scene to ask — the ``frame_travel`` convention) and stays quiet;
+    ``""`` means the element was read and no rotor is recorded yet.
+    """
+    for element in elements:
+        if kinds.rig_for_kind(element.kind) != kinds.RIG_DRIVER:
+            continue
+        if element.rotor is None or element.rotor:
+            continue
+        if element.frames > 1:
+            report.add(
+                WARNING,
+                "rotor",
+                "no rotor recorded — pick the rotating part in the Rig panel "
+                "and Generate Rig, or every frame renders identically",
                 subject=element.path,
             )
 

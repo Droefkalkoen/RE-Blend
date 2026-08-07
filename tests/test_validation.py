@@ -276,6 +276,35 @@ def test_uneven_travel_is_only_checked_on_faders(project_dir):
     assert "travel" not in codes(validate_link(link, elements))
 
 
+def test_knob_with_no_recorded_rotor_is_a_warning(project_dir):
+    # The knob counterpart of the empty-state-table warning: nothing is
+    # rigged to spin, so all 61 frames would render identically.
+    link, elements = make_scene(project_dir)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    knob.rotor = ""  # read from the scene, no rotor recorded
+    report = validate_link(link, elements)
+    rotor = [f for f in report.warnings if f.code == "rotor"]
+    assert len(rotor) == 1
+    assert rotor[0].subject == "Knob_65x65_61frames"
+    assert report.ok  # warning, not error
+
+
+def test_knob_with_a_recorded_rotor_is_clean(project_dir):
+    link, elements = make_scene(project_dir)
+    next(e for e in elements
+         if e.path == "Knob_65x65_61frames").rotor = "Rotor.001"
+    assert "rotor" not in codes(validate_link(link, elements))
+
+
+def test_unknown_rotor_stays_quiet(project_dir):
+    # Spec-derived data has no scene to ask (rotor is None) — the check must
+    # not flag what nothing measured, the frame_travel convention.
+    link, elements = make_scene(project_dir)
+    knob = next(e for e in elements if e.path == "Knob_65x65_61frames")
+    assert knob.rotor is None
+    assert "rotor" not in codes(validate_link(link, elements))
+
+
 def test_corrupt_state_table_is_an_error(project_dir):
     link, elements = make_scene(project_dir)
     next(e for e in elements if e.kind == kinds.FADER_HANDLE).states = "{not json"
