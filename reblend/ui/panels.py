@@ -391,6 +391,7 @@ class REBLEND_PT_rig(bpy.types.Panel):
                       and selected.name in active.all_objects)
 
         col = layout.column()
+        col.enabled = resolvable or selectable
         col.operator("reblend.generate_rig", icon="DRIVER")
         if resolvable:
             return
@@ -400,25 +401,22 @@ class REBLEND_PT_rig(bpy.types.Panel):
             layout.label(text=f"Will record '{selected.name}' as the rotor",
                          icon="INFO")
         elif rotor_name:
-            col.enabled = False
             warn = layout.row()
             warn.alert = True
             warn.label(text=f"Rotor '{rotor_name}' is gone — pick it again",
                        icon="ERROR")
         else:
-            col.enabled = False
             layout.label(text="Pick the rotating part as Rotor first",
                          icon="INFO")
 
     def _draw_states(self, layout, active, data) -> None:
         table = _element_state_table(active, data)
         col = layout.column()
+        col.enabled = table is not None and bool(table.controls())
         col.operator("reblend.generate_rig", icon="DRIVER")
         if table is None:
-            col.enabled = False
             layout.label(text="Fix the state table first", icon="ERROR")
         elif not table.controls():
-            col.enabled = False
             layout.label(text="No actions yet — add them in State Table above",
                          icon="INFO")
 
