@@ -66,7 +66,7 @@ and the Blender-independent layers are covered by the pytest suite (import/corre
 migrations, state-table compilation, stitcher geometry, the full §6.3 cross-check table, and
 the M0 multiples-of-5 rule enforced in `render/validators.py`). What remains is running it on
 the pilot: import the pilot project, model into the imported boxes, and get the phase-1 sheet
-list through Render All + Validate with zero errors on a machine with Blender 4.2 LTS+.
+list through Render All Sheets + Validate with zero errors on a machine with Blender 4.2 LTS+.
 
 Worth saying out loud: the MVP is already useful. Even without write-back, "model in the boxes,
 press render, get correct sheets" replaces the entire manual crop-and-stack workflow.

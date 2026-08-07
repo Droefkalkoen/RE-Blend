@@ -413,7 +413,7 @@ def _check_placement_drift(
                 f"moved {dx:+.0f}, {dy:+.0f} px in the scene: "
                 f"({derived.x:.0f}, {derived.y:.0f}) vs "
                 f"({stored.x:.0f}, {stored.y:.0f}) in device_2D.lua — "
-                "Export Layout writes it, Re-import & Reposition discards it",
+                "Write Layout to Lua writes it, Re-import & Reposition discards it",
                 subject=element.path,
                 panel=stored.panel,
             )
@@ -458,8 +458,8 @@ def _check_shadow_owner(
                 f"geometry slides {travel.across:.0f} px across the panel "
                 f"between frames, but its shadow is baked into the background "
                 "— the baked shadow stays where frame 0 put it while the art "
-                "moves away from it. Set Shadow to 'This Element' so the "
-                "shadow travels in the sheet",
+                "moves away from it. Set Cast Shadow Into to 'Own Sheet' so "
+                "the shadow travels in the sheet",
                 subject=element.path,
             )
         elif travel.depth > TRAVEL_TOLERANCE_PX:
@@ -470,7 +470,7 @@ def _check_shadow_owner(
                 f"between frames (towards or away from the viewer) with its "
                 "shadow baked into the background — the real shadow would "
                 "shift and soften, the baked one cannot. Usually fine for a "
-                "button cap; set Shadow to 'This Element' if the shift shows",
+                "button cap; set Cast Shadow Into to 'Own Sheet' if the shift shows",
                 subject=element.path,
             )
 

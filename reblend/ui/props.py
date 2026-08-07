@@ -44,8 +44,9 @@ class REBLEND_PG_finding(bpy.types.PropertyGroup):
 #: Dynamic enum item tuples must outlive the callback (Blender keeps only a
 #: pointer to the strings), so both sets live at module level.
 _RESOLUTION_ITEMS = (
-    ("THEIRS", "Theirs", "Take the value from the project's Lua files"),
-    ("MINE", "Mine", "Keep the scene's value (export writes it back)"),
+    ("THEIRS", "Use Project's", "Take the value from the project's Lua files"),
+    ("MINE", "Keep Scene's", "Keep the scene's value (Write Layout to Lua "
+                              "writes it back)"),
 )
 _RESOLUTION_ITEMS_REMOVED = (
     ("MINE", "Keep", "Keep the element in the scene — it stays flagged until "
@@ -66,7 +67,7 @@ _SHADOW_OWNER_ITEMS = (
      "anything that holds still across its frames (a knob spins in place, a "
      "button's cap presses within its own outline) — the shadow is rendered "
      "once into the backdrop instead of repeated in every frame"),
-    (kinds.SHADOW_ELEMENT, "This Element",
+    (kinds.SHADOW_ELEMENT, "Own Sheet",
      "Render this element's cast shadow into its own sheet, where it travels "
      "with the art frame by frame. Needed whenever the art moves across the "
      "panel between frames — a fader handle bakes its whole travel, so a "
@@ -92,14 +93,14 @@ class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
     ``resolution`` is the per-item choice (§6.1): accept-theirs/keep-mine for
     added and changed items; keep-or-delete for removed items. Removed
     elements are never deleted automatically — Delete is an explicit choice
-    Apply Resolutions confirms before acting on.
+    Apply Choices confirms before acting on.
     """
 
     path: bpy.props.StringProperty()
     status: bpy.props.StringProperty()
     summary: bpy.props.StringProperty()
     resolution: bpy.props.EnumProperty(
-        name="Resolution",
+        name="Choice",
         items=_resolution_items,
     )
 
@@ -216,27 +217,27 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         default="auto",
     )
     frame_w: bpy.props.IntProperty(
-        name="Frame W",
-        description="Per-frame width in pixels applied by Set Frame Size. Frame "
+        name="Width",
+        description="Per-frame width in pixels applied by Fill Missing Sizes. Frame "
                     "size isn't in the RE Lua (§5.2) — the designer picks it, so "
                     "fresh imports start unsized until this fills them in",
         default=0,
         min=0,
     )
     frame_h: bpy.props.IntProperty(
-        name="Frame H",
-        description="Per-frame height in pixels applied by Set Frame Size",
+        name="Height",
+        description="Per-frame height in pixels applied by Fill Missing Sizes",
         default=0,
         min=0,
     )
     inactive_render: bpy.props.EnumProperty(
-        name="Inactive Elements",
+        name="Other Elements",
         description="How the other RE Elements behave while one element is "
                     "rendered (§5.1). Shadow-only keeps neighbouring geometry "
                     "shadowing the active element without appearing in its "
                     "sheet. This is about shadows falling *on* the element "
                     "being rendered — where an element's own cast shadow goes "
-                    "is the per-element Shadow setting",
+                    "is the per-element Cast Shadow Into setting",
         items=(
             ("SHADOW", "Cast Shadows",
              "Invisible to the camera but still cast shadows on the active "
@@ -293,7 +294,7 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         set=lambda self, value: _set_active_frame_size(h=value),
     )
     active_shadow_owner: bpy.props.EnumProperty(
-        name="Shadow",
+        name="Cast Shadow Into",
         description="Where the active element's cast shadow is rendered (§5.1)",
         items=_SHADOW_OWNER_ITEMS,
         get=lambda self: _active_shadow_owner(),

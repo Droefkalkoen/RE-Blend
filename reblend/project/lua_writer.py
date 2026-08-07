@@ -613,7 +613,7 @@ def compute_device_edits(
             if node is None:
                 notes.append(
                     f"{placement.panel}/{placement.node}: not in device_2D.lua — "
-                    "skipped (run Sync to review adds/removes)"
+                    "skipped (run Check for Differences to review adds/removes)"
                 )
                 continue
 

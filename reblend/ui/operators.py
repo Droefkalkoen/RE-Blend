@@ -643,7 +643,7 @@ class REBLEND_OT_import_project(bpy.types.Operator):
             if len(keepable) > 8:
                 box.label(text=f"…and {len(keepable) - 8} more")
             col.label(text="Repositioning overwrites these with the file's values.")
-            col.label(text="Export Layout first to keep them instead.")
+            col.label(text="Write Layout to Lua first to keep them instead.")
         if derived:
             box = col.box().column(align=True)
             for line in derived[:8]:
@@ -659,7 +659,7 @@ class REBLEND_OT_import_project(bpy.types.Operator):
 
         Two groups, because the escape hatches differ. *Keepable* values —
         placements (a dragged empty, or a stored offset the file disagrees
-        with) and frame counts — are exactly what Export Layout writes, so
+        with) and frame counts — are exactly what Write Layout to Lua writes, so
         exporting first preserves them. *Derived* values are defined by the
         project itself: kind follows the hdgui_2D widget type and frame size
         is probed from the PNG on disk, so no export can keep the scene's
@@ -769,7 +769,7 @@ class REBLEND_OT_set_frame_size(bpy.types.Operator):
     """
 
     bl_idname = "reblend.set_frame_size"
-    bl_label = "Set Frame Size"
+    bl_label = "Fill Frame Sizes"
     bl_options = {"REGISTER", "UNDO"}
 
     scope: bpy.props.EnumProperty(
@@ -785,7 +785,7 @@ class REBLEND_OT_set_frame_size(bpy.types.Operator):
         settings = _settings(context)
         w, h = int(settings.frame_w), int(settings.frame_h)
         if w <= 0 or h <= 0:
-            self.report({"ERROR"}, "set a positive Frame W and Frame H first")
+            self.report({"ERROR"}, "set a positive Width and Height first")
             return {"CANCELLED"}
 
         if self.scope == "ACTIVE":
@@ -2196,7 +2196,7 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
     """
 
     bl_idname = "reblend.export_patch"
-    bl_label = "Export Layout (Patch Lua)"
+    bl_label = "Write Layout to Lua…"
 
     @classmethod
     def poll(cls, context):
@@ -2238,7 +2238,8 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
         if len(preview) > 10:
             box.label(text=f"…and {len(preview) - 10} more (full list in the console)")
         if getattr(self, "_skipped", 0):
-            col.label(text=f"{self._skipped} unknown node(s) skipped — run Sync",
+            col.label(text=f"{self._skipped} unknown node(s) skipped — "
+                      "run Check for Differences",
                       icon="INFO")
         col.label(text="Comments and formatting are preserved; the result is")
         col.label(text="re-parsed before the file is replaced.")
@@ -2300,7 +2301,8 @@ class REBLEND_OT_export_patch(bpy.types.Operator):
 
         # The file now agrees with the scene: keep the re_* mirror true too —
         # but only for elements whose node the patch could actually reach. An
-        # element skipped as unknown ("run Sync") exported nothing, and
+        # element skipped as unknown ("run Check for Differences") exported
+        # nothing, and
         # overwriting its mirror would silently desync it from the Lua.
         for collection, data in snapshots:
             placements = data.effective_placements
@@ -2322,11 +2324,11 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
     """Diff the project's Lua against the scene without changing either (§6.1).
 
     New nodes, removed nodes, and changed values land in the Sync list for
-    per-item accept-theirs/keep-mine resolution; Apply Resolutions acts on it.
+    per-item accept-theirs/keep-mine choices; Apply Choices acts on it.
     """
 
     bl_idname = "reblend.sync_project"
-    bl_label = "Sync With Project"
+    bl_label = "Check for Differences"
 
     @classmethod
     def poll(cls, context):
@@ -2358,7 +2360,7 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
 
 
 class REBLEND_OT_apply_sync(bpy.types.Operator):
-    """Apply the per-item Sync resolutions (§6.1).
+    """Apply the per-item choices from the last Check for Differences (§6.1).
 
     Accept-theirs materialises new elements and snaps changed ones onto the
     file's values through the same path a full import uses; keep-mine leaves
@@ -2368,7 +2370,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
     """
 
     bl_idname = "reblend.apply_sync"
-    bl_label = "Apply Resolutions"
+    bl_label = "Apply Choices…"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -2488,7 +2490,7 @@ class REBLEND_OT_delete_element(bpy.types.Operator):
     """
 
     bl_idname = "reblend.delete_element"
-    bl_label = "Delete RE Element"
+    bl_label = "Delete Element…"
     bl_options = {"REGISTER", "UNDO"}
 
     path: bpy.props.StringProperty(
@@ -2524,15 +2526,15 @@ class REBLEND_OT_delete_element(bpy.types.Operator):
 class REBLEND_OT_purge_removed(bpy.types.Operator):
     """Delete every element whose node is gone from the Lua, in one pass (§6.1).
 
-    The bulk form of resolving removed Sync items as Delete: re-reads the
+    The bulk form of resolving removed diff items as Delete: re-reads the
     project, finds every scene element no longer named in device_2D.lua,
-    confirms the full list, then sweeps each one the same way Delete RE
+    confirms the full list, then sweeps each one the same way Delete
     Element does. Elements not yet exported (no node *yet*) look identical to
     removed ones, so check the list before confirming.
     """
 
     bl_idname = "reblend.purge_removed"
-    bl_label = "Clean Up Removed Elements"
+    bl_label = "Delete Orphaned Elements…"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -2815,7 +2817,7 @@ class REBLEND_OT_preview_panel(bpy.types.Operator):
     """
 
     bl_idname = "reblend.preview_panel"
-    bl_label = "Preview Panel"
+    bl_label = "Composite Preview"
 
     @classmethod
     def poll(cls, context):
