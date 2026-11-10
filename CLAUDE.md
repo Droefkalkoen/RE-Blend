@@ -196,3 +196,6 @@ product, not an opaque binary drop.
   docs. Keep the two kinds of claim distinguishable: a spec requirement and an observed tool
   behaviour are not interchangeable evidence.
 - SDK tool *paths* are per-machine settings, never committed to the repo.
+- **Never write the owner's personal name** in PR titles or bodies, commit messages, issues,
+  comments or docs in this public repo. Refer to the GitHub login or to "the owner" instead.
+  (The copyright line in `LICENSE` is the owner's own and stays.)
