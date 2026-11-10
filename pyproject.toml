@@ -34,4 +34,8 @@ packages = [
     "reblend.model",
     "reblend.render",
     "reblend.ui",
+    "rebench",
 ]
+
+[project.scripts]
+rebench = "rebench.cli:main"
