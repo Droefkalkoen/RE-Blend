@@ -76,9 +76,41 @@ python3 -m rebench rules                                       # the catalogue, 
   the folded tape under the fold arrow and the folded bypass fader not top-left (Skou feedback
   #29), the two layout issues that audit fixed by hand.
 
-Not in phase 1, because the project files do not carry the information: text size (needs the
-sidecar's label sizes, phase 2), routing icons and rack-hole screws (they are panel art), and
-fader frame direction (needs the rendered frames).
+Not in phase 1, because the project files do not carry the information: routing icons and
+rack-hole screws (they are panel art), and fader frame direction (needs the rendered frames).
+Text size arrived with the sidecar in phase 2.
+
+## Phase 2: what exists now
+
+```sh
+python3 -m rebench serve <project root> [--port 8765]          # the canvas, on 127.0.0.1
+python3 -m rebench apply <project root> ops.json [--dry-run] [--json]   # exit 3 when refused
+python3 -m rebench render <project root> --panel front --out front.png [--scale 0.5] [--ops ops.json]
+python3 -m rebench mcp [--project <project root>]              # MCP server on stdio
+```
+
+- `rebench/sidecar.py`: `GUI2D/rebench.json` (schema version 1): per-sprite frame size and
+  blockout shape, and labels (text, panel, position, size in px, functional or decorative).
+  Missing means empty, so existing projects need no change. Sidecar frame sizes win over the
+  PNG probe, which is how a designer-set size survives a stale render.
+- `text-size` rule (`guide`): a functional label under the profile's `min_text_px` (43) warns.
+- `rebench/ops.py`: the edit operations (`move`, `nudge`, `set_frames`, `set_frame_size`,
+  `set_shape`, `label`, `remove_label`). A batch applies whole or not at all; positions and
+  frame counts go through RE-Blend's patch mode, so comments and unknown attributes survive and
+  an ambiguous anchor refuses. Every apply reports the findings it added and resolved.
+- `rebench/render.py`: a panel as SVG at 1 unit = 1 hi-res px (frame N of each sprite, grey
+  blockouts for missing art, labels, findings outlined on their nodes, hatched margins, ear
+  lines and the measured fold-arrow keep-out), and PNG via headless Chromium.
+- `rebench/server.py` + `static/index.html`: the canvas. Drag nodes and labels (5 px snap),
+  click to place a label, switch panels, zoom (fit, 25 %, 50 %, 100 %), show any sprite frame.
+  Edits are staged and previewed by dry run; nothing is written until **Write to Lua**.
+- `rebench/agent.py` + `rebench/mcp_server.py`: the agent operations `project_load`,
+  `rules_check`, `layout_dry_run`, `layout_apply`, `view_render` (underscores, since not every
+  MCP client accepts dots). `view_render` returns the PNG as an image so an agent can look.
+  Standard library only; Playwright is needed for PNGs alone (`pip install -e ".[screenshots]"`).
+- Exit check: on a copy of Skou's files, dragging `meter_input` 60 px right in the canvas
+  resolves the rack-ear finding and **Write to Lua** changes that one offset, comment intact;
+  the same move by `layout_dry_run` and a `view_render` screenshot work over MCP.
 
 ## Open items
 

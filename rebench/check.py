@@ -5,14 +5,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from reblend.project.link import ProjectLink, load_project
+from reblend.project.link import ProjectLink
 from reblend.project.validation import validate_link
 
 from .catalogue import rule_for
-from .layout import check_layout
+from .layout import check_labels, check_layout
 from .profile import Profile, load_profile
+from .project import BenchProject
 
-__all__ = ["BenchFinding", "CheckResult", "run_checks"]
+__all__ = ["BenchFinding", "CheckResult", "run_checks", "check_project"]
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,13 @@ def run_checks(root: Path | str, profile: Profile | None = None,
                link: ProjectLink | None = None) -> CheckResult:
     """Check an RE project from its files alone (no Blender scene)."""
     root = Path(root)
-    profile = profile or load_profile(root)
-    link = link or load_project(root)
+    return check_project(BenchProject.load(root), profile or load_profile(root))
+
+
+def check_project(project: BenchProject, profile: Profile | None = None) -> CheckResult:
+    """Check a loaded (possibly edited, not yet written) project."""
+    profile = profile or load_profile(project.root)
+    link = project.link
 
     findings: list[BenchFinding] = []
     report = validate_link(link, [spec.to_element_data() for spec in link.specs])
@@ -67,9 +73,9 @@ def run_checks(root: Path | str, profile: Profile | None = None,
         if rule_for(f.code).scene_only:
             continue
         findings.append(_tag(f.severity, f.code, f.message, f.subject, f.panel))
-    for f in check_layout(link, profile):
+    for f in check_layout(link, profile) + check_labels(project.sidecar, profile):
         findings.append(_tag(f.severity, f.code, f.message, f.subject, f.panel))
 
     order = {"error": 0, "warning": 1}
     findings.sort(key=lambda f: (order.get(f.severity, 2), f.code, f.panel, f.subject))
-    return CheckResult(root, findings)
+    return CheckResult(project.root, findings)

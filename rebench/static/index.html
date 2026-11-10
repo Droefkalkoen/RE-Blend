@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RE Bench</title>
+<style>
+  :root { --bg:#16191d; --panel:#1f2328; --line:#2f353c; --ink:#e8ecef; --quiet:#98a2ad;
+          --err:#e5484d; --warn:#f5a524; --ok:#3e9bff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.45 system-ui, sans-serif;
+         display:grid; grid-template-rows:auto 1fr; height:100vh; }
+  header { display:flex; gap:12px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line);
+           background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:14px; margin:0 8px 0 0; }
+  button, select, input { font:inherit; color:var(--ink); background:#2a2f35; border:1px solid var(--line);
+           border-radius:6px; padding:4px 9px; }
+  button.on { background:var(--ok); border-color:var(--ok); color:#fff; }
+  button.primary { background:#2f7d4f; border-color:#2f7d4f; }
+  button:disabled { opacity:.45; }
+  main { display:grid; grid-template-columns:1fr 340px; min-height:0; }
+  #stage { overflow:auto; padding:16px; min-width:0; }
+  #stage svg { display:block; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+  #stage .node { cursor:grab; }
+  #stage .node.dragging { cursor:grabbing; opacity:.85; }
+  #stage .label { cursor:move; }
+  body.hide-overlays .outline, body.hide-overlays .node text, body.hide-overlays .reserved { display:none; }
+  aside { border-left:1px solid var(--line); background:var(--panel); overflow:auto; padding:12px 14px; }
+  aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--quiet); margin:16px 0 6px; }
+  .finding { border-left:3px solid var(--warn); padding:4px 8px; margin:6px 0; background:#262b31; border-radius:0 6px 6px 0; }
+  .finding.error { border-color:var(--err); }
+  .finding .meta { color:var(--quiet); font-size:11px; }
+  .badge { display:inline-block; font-size:10px; padding:0 5px; border-radius:4px; background:#38414a; margin-right:4px; }
+  .delta-add { color:var(--err); } .delta-fix { color:#46a758; }
+  #ops li { color:var(--quiet); }
+  .row { display:flex; gap:6px; margin:4px 0; }
+  .row input { min-width:0; flex:1; }
+  #status { color:var(--quiet); margin-left:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RE Bench</h1>
+  <span id="tabs"></span>
+  <span>Zoom
+    <select id="zoom">
+      <option value="fit">Fit</option>
+      <option value="0.5">50% (lo-res set)</option>
+      <option value="1">100% (hi-res)</option>
+      <option value="0.25">25%</option>
+    </select>
+  </span>
+  <label><input type="checkbox" id="overlays" checked> Overlays</label>
+  <label>Frame <input type="number" id="frame" value="0" min="0" style="width:60px"></label>
+  <span id="status"></span>
+</header>
+<main>
+  <div id="stage"></div>
+  <aside>
+    <div class="row">
+      <button id="write" class="primary" disabled>Write to Lua</button>
+      <button id="discard" disabled>Discard</button>
+    </div>
+    <h2>Staged changes</h2>
+    <ol id="ops"></ol>
+    <h2>This change</h2>
+    <div id="delta" class="meta"></div>
+    <h2>Add label</h2>
+    <div class="row"><input id="lt" placeholder="Text"><input id="ls" type="number" value="48" style="max-width:70px" title="Size in hi-res px"></div>
+    <div class="row"><label><input type="checkbox" id="lf" checked> functional</label>
+      <button id="addlabel">Click panel to place</button></div>
+    <h2>Findings</h2>
+    <div id="findings"></div>
+  </aside>
+</main>
+<script>
+const S = { panel: null, ops: [], frame: 0, placing: false };
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function refresh() {
+  $('status').textContent = 'checking…';
+  const res = await fetch('/api/preview', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ ops: S.ops, panel: S.panel, frame: S.frame }) });
+  const data = await res.json();
+  if (!res.ok) { $('status').textContent = data.reasons ? data.reasons.join('; ') : data.error; S.ops.pop(); return; }
+  S.panel = data.panel;
+  $('tabs').innerHTML = data.panels.map((p) =>
+    `<button data-p="${p}" class="${p === S.panel ? 'on' : ''}">${p.replace('_', ' ')}</button>`).join(' ');
+  $('stage').innerHTML = data.svg;
+  applyZoom();
+  bindDrag();
+  const errors = data.findings.filter((f) => f.severity === 'error').length;
+  $('status').textContent = `${errors} error(s), ${data.findings.length - errors} warning(s)`;
+  $('findings').innerHTML = data.findings.map((f) => `<div class="finding ${f.severity}">
+      <div class="meta"><span class="badge">${esc(f.source)}</span>${esc(f.code)}${f.panel ? ' · ' + esc(f.panel) : ''}${f.subject ? ' · ' + esc(f.subject) : ''}</div>
+      ${esc(f.message)}</div>`).join('') || '<div class="meta">No findings.</div>';
+  $('ops').innerHTML = data.applied.map((a) => `<li>${esc(a)}</li>`).join('');
+  $('delta').innerHTML = S.ops.length ? [
+      ...data.added.map((f) => `<div class="delta-add">+ ${esc(f.code)} ${esc(f.subject)}</div>`),
+      ...data.resolved.map((f) => `<div class="delta-fix">✓ ${esc(f.code)} ${esc(f.subject)}</div>`)
+    ].join('') || 'No change in findings.' : 'Nothing staged.';
+  $('write').disabled = $('discard').disabled = !S.ops.length;
+}
+
+function applyZoom() {
+  const svg = $('stage').querySelector('svg'); if (!svg) return;
+  const [w, h] = svg.getAttribute('viewBox').split(' ').slice(2).map(Number);
+  const z = $('zoom').value;
+  const scale = z === 'fit' ? ($('stage').clientWidth - 32) / w : Number(z);
+  svg.setAttribute('width', w * scale); svg.setAttribute('height', h * scale);
+}
+
+function svgPoint(svg, evt) {
+  const pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+const snap = (v) => Math.round(v / 5) * 5;
+
+function stage(op, key) {
+  S.ops = S.ops.filter((o) => key(o) !== key(op));
+  S.ops.push(op);
+  refresh();
+}
+
+function bindDrag() {
+  const svg = $('stage').querySelector('svg'); if (!svg) return;
+  svg.addEventListener('click', (evt) => {
+    if (!S.placing) return;
+    const p = svgPoint(svg, evt); S.placing = false; $('addlabel').classList.remove('on');
+    const text = $('lt').value.trim(); if (!text) return;
+    stage({ op: 'label', id: 'lbl-' + Date.now().toString(36), panel: S.panel, text,
+            x: snap(p.x), y: snap(p.y), size_px: Number($('ls').value), functional: $('lf').checked },
+          (o) => o.op + (o.id || ''));
+  });
+  for (const el of svg.querySelectorAll('.node, .label')) {
+    el.addEventListener('pointerdown', (evt) => {
+      if (S.placing) return;
+      evt.preventDefault(); el.setPointerCapture(evt.pointerId); el.classList.add('dragging');
+      const start = svgPoint(svg, evt);
+      const isNode = el.classList.contains('node');
+      const ox = Number(isNode ? el.dataset.x : el.getAttribute('x'));
+      const oy = Number(isNode ? el.dataset.y : el.getAttribute('y'));
+      let nx = ox, ny = oy;
+      const move = (e) => {
+        const p = svgPoint(svg, e);
+        nx = snap(ox + p.x - start.x); ny = snap(oy + p.y - start.y);
+        if (isNode) el.setAttribute('transform', `translate(${nx},${ny})`);
+        else { el.setAttribute('x', nx); el.setAttribute('y', ny); }
+      };
+      const up = () => {
+        el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up);
+        el.classList.remove('dragging');
+        if (nx === ox && ny === oy) return;
+        if (isNode) stage({ op: 'move', panel: S.panel, node: el.dataset.node, x: nx, y: ny },
+                          (o) => `${o.op}|${o.panel}|${o.node}`);
+        else stage({ op: 'label', id: el.dataset.label, x: nx, y: ny }, (o) => `label-move|${o.id}`);
+      };
+      el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+    });
+  }
+}
+
+$('tabs').addEventListener('click', (e) => { if (e.target.dataset.p) { S.panel = e.target.dataset.p; refresh(); } });
+$('zoom').addEventListener('change', applyZoom);
+window.addEventListener('resize', () => { if ($('zoom').value === 'fit') applyZoom(); });
+$('overlays').addEventListener('change', (e) => document.body.classList.toggle('hide-overlays', !e.target.checked));
+$('frame').addEventListener('change', (e) => { S.frame = Number(e.target.value) || 0; refresh(); });
+$('addlabel').addEventListener('click', () => { S.placing = !S.placing; $('addlabel').classList.toggle('on', S.placing); });
+$('discard').addEventListener('click', () => { S.ops = []; refresh(); });
+$('write').addEventListener('click', async () => {
+  const res = await fetch('/api/write', { method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ ops: S.ops }) });
+  const data = await res.json();
+  if (!res.ok) { $('status').textContent = 'Refused: ' + (data.reasons || [data.error]).join('; '); return; }
+  S.ops = []; await refresh(); $('status').textContent += ' · written';
+});
+refresh();
+</script>
+</body>
+</html>

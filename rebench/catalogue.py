@@ -49,6 +49,8 @@ RULES: dict[str, Rule] = {r.code: r for r in (
     Rule("rack-ear", "Only ear art (tape, screws) on the rack ears", "house", "Skou feedback #24"),
     Rule("placeholder", "Back panel declares the 300x100 placeholder", "req", f"{_G}: required device parts"),
     Rule("cable-origin", "cable_origin on the folded back panel only", "spec", _S),
+    Rule("text-size", "Functional text at least 43 px", "guide",
+         f"{_G}: readability (requirement: readable on a 27-inch display; 43 px is the guideline)"),
     # --- required parts ----------------------------------------------------
     Rule("bypass-top-left", "Effects: on/off/bypass top-left on front and folded front", "req",
          f"{_G}: required device parts (corner size is a house reading)"),
