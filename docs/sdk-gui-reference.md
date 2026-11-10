@@ -241,6 +241,9 @@ recorded in `docs/findings-m0.md`, and the ground truth for them is still what R
 and what RE2DPreview/Recon display:
 
 - Per-frame width/height must be multiples of 5, or RE2DRender emits a `-reframed` copy.
+- Where the fold/unfold arrow sits (the guidelines require that nothing overlaps it but give no
+  position): measured at about x 80–125, y 55–105 on every panel, see
+  [`findings-fold-arrow.md`](findings-fold-arrow.md).
 - RE2DRender aborts if any of the four panels is missing from `device_2D.lua`.
 - `cable_origin` is enforced at the `gui.lua` export stage, not at read time.
 - Straight vs premultiplied alpha handling end to end (design risk §10.1).

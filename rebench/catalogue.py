@@ -45,7 +45,7 @@ RULES: dict[str, Rule] = {r.code: r for r in (
     # --- reserved areas ----------------------------------------------------
     Rule("edge-margin", "25 px left/right margin clear of interaction widgets", "req", f"{_G}: required device parts"),
     Rule("fold-arrow", "Nothing overlaps Reason's fold/unfold arrow", "req",
-         f"{_G}: required device parts (keep-out position is observed, not in the SDK)"),
+         f"{_G}: required device parts (position observed: docs/findings-fold-arrow.md)"),
     Rule("rack-ear", "Only ear art (tape, screws) on the rack ears", "house", "Skou feedback #24"),
     Rule("placeholder", "Back panel declares the 300x100 placeholder", "req", f"{_G}: required device parts"),
     Rule("cable-origin", "cable_origin on the folded back panel only", "spec", _S),

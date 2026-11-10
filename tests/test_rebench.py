@@ -120,14 +120,15 @@ def test_every_rule_names_a_known_source():
     assert {r.source for r in RULES.values()} <= {"req", "spec", "guide", "obs", "house", "tool"}
 
 
-def test_fold_arrow_is_a_warning_until_measured(tmp_path):
+def test_fold_arrow_overlap_is_an_error_now_it_is_measured(tmp_path):
     root = make_project(tmp_path, device=DEVICE_2D.replace("offset = { 500, 40 }, { path = \"Tape\" } },\n    Bypass_F",
                                                            "offset = { 60, 40 }, { path = \"Tape\" } },\n    Bypass_F"))
     found = [f for f in run_checks(root).findings if f.code == "fold-arrow"]
     assert [(f.severity, f.panel, f.subject, f.source) for f in found] == [
-        ("warning", "folded_front", "Tape_F", "req")]
-    measured = run_checks(root, Profile(fold_arrow_measured=True))
-    assert [f.severity for f in measured.findings if f.code == "fold-arrow"] == ["error"]
+        ("error", "folded_front", "Tape_F", "req")]
+    # A profile that marks its keep-out unmeasured only warns.
+    provisional = run_checks(root, Profile(fold_arrow_measured=False))
+    assert [f.severity for f in provisional.findings if f.code == "fold-arrow"] == ["warning"]
 
 
 def test_controls_on_the_rack_ear_are_flagged_but_the_tape_is_not(tmp_path):

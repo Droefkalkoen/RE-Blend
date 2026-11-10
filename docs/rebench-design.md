@@ -70,8 +70,8 @@ python3 -m rebench rules                                       # the catalogue, 
   `device-name`, `socket-panel`, `display-panel`, `sdk-part-frames`.
 - `rebench/profile.py`: the house and observed numbers (ear keep-out, fold-arrow keep-out,
   bypass corner, text floor), overridable per project with `rebench.profile.json` beside
-  `GUI2D/`. The fold-arrow keep-out is **provisional** (a warning, not an error) until
-  `fold_arrow_measured` is set from a Recon measurement.
+  `GUI2D/`. The fold-arrow keep-out is measured from Reason screenshots
+  ([`findings-fold-arrow.md`](findings-fold-arrow.md)), so an overlap is an error.
 - Exit check: run against Skou's files from before its readability/SDK audit commit, it reports
   the folded tape under the fold arrow and the folded bypass fader not top-left (Skou feedback
   #29), the two layout issues that audit fixed by hand.
@@ -82,6 +82,4 @@ fader frame direction (needs the rendered frames).
 
 ## Open items
 
-- Fold-arrow keep-out rectangle: not in the SDK; measure from a Recon screenshot of a 2U device,
-  front and back, folded and unfolded.
 - Text floor for Terp devices: 43 px warning (SDK guideline) or error.

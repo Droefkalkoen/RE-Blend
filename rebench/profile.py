@@ -23,13 +23,15 @@ class Profile:
     #: (Skou feedback #24: the Output plate grew over the right ear).
     ear_left_px: int = 160
     ear_right_px: int = 3610
-    #: Fold/unfold arrow keep-out, per panel kind, as (x, y, w, h). PROVISIONAL:
-    #: the SDK gives no position. Bounded from Skou, where the folded tape had to
-    #: move right of x = 430 and the cable hole at x = 260 clears it. Replace
-    #: with a measurement from a Recon screenshot (docs/rebench-design.md).
-    fold_arrow_full: tuple[int, int, int, int] = (25, 0, 135, 140)
-    fold_arrow_folded: tuple[int, int, int, int] = (25, 0, 135, 150)
-    fold_arrow_measured: bool = False
+    #: Fold/unfold arrow keep-out, per panel kind, as (x, y, w, h). The SDK
+    #: requires that nothing overlaps the arrow but gives no position, so this
+    #: is an observation (docs/findings-fold-arrow.md): measured in Reason on a
+    #: 2U device, all four panels, at 1 screen px = 5 hi-res px (so +/- 5 px).
+    #: The arrow glyph sits at x 80-125, y 55-100 on every panel (centred on
+    #: the folded strip's midline); the keep-out adds about 20 px around it.
+    fold_arrow_full: tuple[int, int, int, int] = (60, 35, 85, 85)
+    fold_arrow_folded: tuple[int, int, int, int] = (60, 35, 85, 85)
+    fold_arrow_measured: bool = True
     #: "Top-left" for the effect bypass control: its centre inside this box.
     #: The SDK names no size; the SDK's SilenceDetectionEffect sits at x 175-185
     #: and Skou's at 170, while Skou's folded fader at x 480 was called out as
