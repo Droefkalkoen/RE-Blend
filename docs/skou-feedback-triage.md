@@ -14,19 +14,23 @@ Small, self-contained, and each one already cost Skou a manual workaround. Verif
 `develop` before fixing: some may already be fixed by later commits (the `props.py` getters in
 #1 look resolved on the current code).
 
-| # | Bug | Where |
-| --- | --- | --- |
-| 1 | Panel property getters raise `NameError` (`_active_frame_size` and friends) | `ui/props.py` |
-| 2 | Preview Panel fails on a second run once the preview image is saved | `ui/operators.py` `_show_image` |
-| 3 | Apply Choices reverts designer-set frame sizes to the stale PNG size | `project/merge.py`, frame-size probe |
-| 4 | Merge-item `resolution` enum is empty from Python | `ui/props.py` dynamic enum |
-| 5 | Placement 0 of a multi-placement element ignores `re_placements` | `model/schema.py`, placement code |
-| 17 | Knob turntable runs backwards for a `neg_y` camera | `model/rigs.py` driver expression |
-| 22, 34 | Copied elements share state actions; Generate Rig rewrites the original's keys | `model/rigs.py`: own action per element, or refuse |
-| 37 | False "shadow-owner: slides N px" after moving an element | `project/validation.py` `_check_shadow_owner` |
-| 35 | Hidden objects report stale bounds to placement helpers | helpers that place state-dependent objects |
-| 6 | Drivers invalid after `material.copy()`; Repair Channels could re-validate | `ui/operators.py` repair |
-| 23 | A failing step after a render goes unnoticed: add a render-complete flag | `render/renderer.py` |
+Status as of the first fix pass on `develop`: **fixed** (with a test), **resolved** (already
+fixed by later code), **by design** (documented instead), or **open** (needs Blender to
+reproduce and test; not fixed in a headless container).
+
+| # | Bug | Where | Status |
+| --- | --- | --- | --- |
+| 1 | Panel property getters raise `NameError` (`_active_frame_size` and friends) | `ui/props.py` | resolved: the getters now call module-level helpers |
+| 2 | Preview Panel fails on a second run once the preview image is saved | `ui/operators.py` `_show_image` | open |
+| 3 | Apply Choices reverts designer-set frame sizes to the stale PNG size | `project/merge.py`, frame-size probe | fixed: frame size is no longer a merge item; a stale sheet is a `png-dims` finding |
+| 4 | Merge-item `resolution` enum is empty from Python | `ui/props.py` dynamic enum | open |
+| 5 | Placement 0 of a multi-placement element ignores `re_placements` | `model/schema.py`, placement code | by design: placement 0 follows the registration empty; move the empty, not the JSON |
+| 17 | Knob turntable runs backwards for a `neg_y` camera | `model/rigs.py` driver expression | fixed: `calibration.turntable_expression`, tested for all six camera axes |
+| 22, 34 | Copied elements share state actions; Generate Rig rewrites the original's keys | `model/rigs.py`: own action per element, or refuse | open |
+| 37 | False "shadow-owner: slides N px" after moving an element | `project/validation.py` `_check_shadow_owner` | partly: the check measures live, so the slide is real until the state keys are regenerated; the message now says to run Generate Rig |
+| 35 | Hidden objects report stale bounds to placement helpers | helpers that place state-dependent objects | open |
+| 6 | Drivers invalid after `material.copy()`; Repair Channels could re-validate | `ui/operators.py` repair | open |
+| 23 | A failing step after a render goes unnoticed: add a render-complete flag | `render/renderer.py` | open |
 
 ## B. Rules: move into the shared rule catalogue (RE Bench phase 1)
 

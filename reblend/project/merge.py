@@ -120,20 +120,11 @@ def _field_changes(spec: ElementSpec, element: ElementData) -> tuple[FieldChange
             FieldChange("placements", _placements_str(mine), _placements_str(theirs))
         )
 
-    # Frame size is scene-owned (§5.2) — the Lua never carries it. Only a
-    # probed-from-disk spec size (nonzero) that contradicts a set scene size
-    # counts as a change; an unsized side never overrides a sized one.
-    if (
-        spec.frame_w and spec.frame_h and element.has_frame_size
-        and (spec.frame_w, spec.frame_h) != (element.frame_w, element.frame_h)
-    ):
-        changes.append(
-            FieldChange(
-                "frame size",
-                f"{element.frame_w}x{element.frame_h}",
-                f"{spec.frame_w}x{spec.frame_h}",
-            )
-        )
+    # Frame size is scene-owned (§5.2): the Lua never carries it, and a size
+    # probed from a PNG on disk only says what the *last render* produced. So
+    # it is never offered as "theirs" — accepting it silently reverted every
+    # element the designer had just resized (Skou feedback #3). A stale sheet
+    # is a re-render, which validation's ``png-dims`` check already reports.
     return tuple(changes)
 
 
