@@ -22,6 +22,9 @@ dev = [
     # pure-numpy stitcher/validators are testable in plain CPython.
     "numpy>=1.24",
 ]
+# RE Bench PNG screenshots (``rebench render``, the MCP ``view_render`` tool)
+# drive a headless Chromium; SVG output and everything else need no extra.
+screenshots = ["playwright>=1.40"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -36,6 +39,9 @@ packages = [
     "reblend.ui",
     "rebench",
 ]
+
+[tool.setuptools.package-data]
+rebench = ["static/*.html"]
 
 [project.scripts]
 rebench = "rebench.cli:main"

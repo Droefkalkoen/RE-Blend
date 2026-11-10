@@ -20,7 +20,7 @@ from reblend.project.lua_reader import LuaConfigError, _execute_sandboxed
 
 from .profile import Profile
 
-__all__ = ["Rect", "LayoutFinding", "node_rects", "device_type", "check_layout"]
+__all__ = ["Rect", "LayoutFinding", "node_rects", "device_type", "check_layout", "check_labels"]
 
 ERROR = "error"
 WARNING = "warning"
@@ -223,3 +223,17 @@ def _socket_frames(out, link: ProjectLink) -> None:
                 WARNING, "sdk-part-frames",
                 f"socket node '{widget.node}' declares frames = {frames}; the SDK socket "
                 f"sprites are {SOCKET_FRAMES}-frame strips", subject=widget.node, panel=panel))
+
+
+def check_labels(sidecar, profile: Profile) -> list[LayoutFinding]:
+    """Text size: functional labels at least ``profile.min_text_px`` (SDK guideline 43 px)."""
+    out = []
+    for label in sidecar.labels:
+        if label.functional and label.size_px < profile.min_text_px:
+            out.append(LayoutFinding(
+                WARNING, "text-size",
+                f"label '{label.text}' is {label.size_px:g} px; functional text should be at "
+                f"least {profile.min_text_px} px to stay readable (about "
+                f"{label.size_px / 2:g} px in the 0.5x set)",
+                subject=label.id, panel=label.panel))
+    return out
