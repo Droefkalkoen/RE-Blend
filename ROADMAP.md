@@ -125,6 +125,18 @@ can point at RE-Blend as *the* art pipeline.
 **Done when:** a brand-new, empty RE gets from blank scene to previewable panel without
 hand-editing Lua or leaving Blender.
 
+## RE Bench and the Skou feedback (on `develop`)
+
+Work after the pilot's art pass happens on the `develop` branch (see `CLAUDE.md`, Branches) so
+Skou keeps the RE-Blend it was built with. Two tracks:
+
+- **Skou feedback fixes**, triaged in [`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md):
+  bugs first, rules into the shared catalogue, the rest as RE Bench or later Blender features.
+- **RE Bench** ([`docs/rebench-design.md`](docs/rebench-design.md)): a browser layout and rules
+  bench sharing RE-Blend's pure-Python core. Its phase 3 takes over the greenfield part of M4
+  (Lua stub writing and generate mode) from outside Blender; in-viewport placement editing stays
+  M4.
+
 ## Stretch goals
 
 Not scheduled, not promised, but each one has a clear reason to exist. Roughly in order of how
