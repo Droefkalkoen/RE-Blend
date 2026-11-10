@@ -9,6 +9,8 @@ Implementation has started with the Blender-independent layers. Repository conte
 - `Blender_RE_Plugin_Design.md` — the full design document (v0.2 draft) for RE-Blend and the
   authoritative specification to build from. Read it before doing implementation work; it is
   self-contained and every section number referenced below points into it.
+- `docs/rebench-design.md` — RE Bench, the pre-Blender layout and rules bench that will live
+  beside `reblend/` as `rebench/` (planned; see Branches).
 - `ROADMAP.md` — implementation order and milestone exit criteria (M0–M4). Where it disagrees
   with the design doc, the design doc wins and the roadmap gets fixed.
 - `README.md` — public-facing overview; keep it consistent with the design doc.
@@ -43,6 +45,18 @@ Implementation has started with the Blender-independent layers. Repository conte
   `Licenses/RE SDK License Agreement.txt` (kept so the SDK's own terms travel with it).
 - License is **GPL-3.0-or-later** (`LICENSE`); the local SDK copy stays under Reason Studios'
   own terms and is not redistributed with this repo.
+
+## Branches
+
+- **`main`** is the RE-Blend that Skou (the pilot) uses while Skou is in development. Skou has
+  hand-worked around the issues in its `docs/RE-Blend_feedback.md`, so `main` takes no feature
+  work until Skou ships; only a fix Skou itself asks for goes here.
+- **`skou-baseline`** is a frozen copy of `main` at the point the split was made (2026-11-10),
+  so Skou can always reinstall exactly that version.
+- **`develop`** is where new work lands: the Skou feedback fixes
+  ([`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md)) and RE Bench
+  ([`docs/rebench-design.md`](docs/rebench-design.md)). Feature branches open their PRs
+  against `develop`, not `main`. `develop` merges into `main` once Skou is done.
 
 ## Commands
 
