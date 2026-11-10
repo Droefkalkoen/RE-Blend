@@ -112,6 +112,38 @@ python3 -m rebench mcp [--project <project root>]              # MCP server on s
   resolves the rack-ear finding and **Write to Lua** changes that one offset, comment intact;
   the same move by `layout_dry_run` and a `view_render` screenshot work over MCP.
 
+## Phase 3: what exists now
+
+```sh
+python3 -m rebench new <dir> --name "Grit Distortion" --manufacturer "Terp Audio" [--height 2] [--sdk <SDK root>]
+python3 -m rebench greybox <project root> [--sdk <SDK root>] [--dry-run]
+```
+
+- `rebench/templates/effect/` and `rebench/new.py`: a stereo `creative_fx` with one Level knob,
+  bypass fader, tape on all four panels, jacks, placeholder and cable origin, auto-routing and
+  auto-bypass, a gain-stage C++ (On/Off/Bypass, mono in, silence) and a re-cmake build. It
+  passes `rebench check` with no findings; the template files are free to use (see
+  `rebench/templates/README.md`).
+- `add_control` op (`rebench/stubs.py`, Skou feedback #15): node, widget, a `document_owner`
+  property stub with the lowest free tag, and its English name, as anchored insertions with
+  refusal on ambiguity and a re-parse of every edited file. Knob, toggle, momentary and stepped
+  fader get stubs; any widget can bind an existing property. The canvas has an Add control form.
+- `rebench/greybox.py`: flat placeholder sheets at the right size and frame count (knobs turn,
+  faders start at the bottom, buttons light), SDK parts copied from the SDK when given. Each
+  placeholder's hash goes in the sidecar's `greybox` table and only an unchanged placeholder is
+  redrawn, so a render is never overwritten. The canvas has a Greybox button.
+- The sidecar format moved to `reblend/project/sidecar.py`. `load_project` takes frame sizes and
+  shapes from it (designer sizes beat the PNG probe, Skou feedback #3/#11), and a first import
+  adds a blockout mesh per shaped element (`reblend/model/blockout.py`; the mesh maths is
+  tested, the Blender step is not, as no Blender runs in CI).
+- `AGENTS.md`: how agents drive both tools, and the SDK rules in our own words.
+- MCP gains `greybox_build` and `project_new`.
+- Exit check (to run on the build machine): `rebench new`, build, open in Recon; then import into
+  Blender and see the blockouts. In this repo the template's C++ passes a syntax check against
+  `Jukebox.h` 4.6.0 and its Lua loads.
+
+Not yet: an instrument template, removing controls, routing-icon art and its check.
+
 ## Open items
 
 - Text floor for Terp devices: 43 px warning (SDK guideline) or error.

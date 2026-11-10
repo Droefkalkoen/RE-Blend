@@ -18,9 +18,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .lua_reader import LuaConfigError, _execute_sandboxed
+from .lua_reader import LuaConfigError, _execute_sandboxed, _execute_sandboxed_text
 
-__all__ = ["BUILTIN_STEPS", "read_motherboard_steps"]
+__all__ = ["BUILTIN_STEPS", "read_motherboard_steps", "read_motherboard_steps_text"]
 
 #: Steps of built-in properties devices bind without declaring (SDK-defined).
 #: The On/Off/Bypass sequence fader is the canonical case (design §4.3).
@@ -35,8 +35,15 @@ def read_motherboard_steps(path: Path | str) -> dict[str, int]:
     Raises :class:`LuaConfigError` when the file is missing or fails to run.
     """
     path = Path(path)
-    globals_ = _execute_sandboxed(path)
+    return _steps_from_globals(_execute_sandboxed(path))
 
+
+def read_motherboard_steps_text(source: str, name: str = "motherboard_def.lua") -> dict[str, int]:
+    """:func:`read_motherboard_steps` on source text (``name`` labels errors)."""
+    return _steps_from_globals(_execute_sandboxed_text(source, Path(name)))
+
+
+def _steps_from_globals(globals_: dict[str, Any]) -> dict[str, int]:
     steps = dict(BUILTIN_STEPS)
     custom = globals_.get("custom_properties")
     if isinstance(custom, dict):

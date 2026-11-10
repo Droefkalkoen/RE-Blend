@@ -32,8 +32,10 @@ from .lua_reader import (
 )
 from .motherboard_reader import read_motherboard_steps
 from .png_meta import PngError, read_png_meta
+from .sidecar import Sidecar
 
-__all__ = ["GUI2D_DIRNAME", "ElementSpec", "ProjectLink", "derive_specs", "load_project"]
+__all__ = ["GUI2D_DIRNAME", "ElementSpec", "ProjectLink", "derive_specs", "load_project",
+           "size_specs"]
 
 GUI2D_DIRNAME = "GUI2D"
 MOTHERBOARD_FILENAME = "motherboard_def.lua"
@@ -45,7 +47,12 @@ class ElementSpec:
 
     ``frame_w``/``frame_h`` are 0 when unknown — an existing sheet on disk
     fills them in (dimensions ÷ frames); otherwise the designer decides them
-    in Blender and validation nags until they're set.
+    in Blender and validation nags until they're set. A size set in RE Bench's
+    sidecar (``GUI2D/rebench.json``) wins over the sheet on disk, which only
+    says what the last render produced.
+
+    ``shape`` is the sidecar's blockout shape (``{"type": "knob", ...}``),
+    empty when the bench never set one; import uses it for blockout geometry.
     """
 
     path: str
@@ -55,6 +62,7 @@ class ElementSpec:
     frame_h: int = 0
     placements: tuple[schema.Placement, ...] = ()
     widget_kinds: tuple[str, ...] = ()
+    shape: dict = field(default_factory=dict)
 
     @property
     def node(self) -> str:
@@ -108,8 +116,7 @@ def load_project(root: Path | str) -> ProjectLink:
     hdgui = read_hdgui_2d(gui2d / "hdgui_2D.lua")
 
     specs = derive_specs(device, hdgui)
-    for spec in specs:
-        _probe_frame_size(spec, gui2d)
+    size_specs(specs, gui2d, Sidecar.load(root))
 
     property_steps: dict[str, int] = {}
     motherboard = root / MOTHERBOARD_FILENAME
@@ -186,6 +193,18 @@ def _walk(
 
     for child_name in sorted(node.children):
         _walk(by_path, hdgui, backdrop_nodes, panel, node.children[child_name], x, y)
+
+
+def size_specs(specs: list[ElementSpec], gui2d_dir: Path, sidecar: Sidecar) -> None:
+    """Frame sizes and blockout shapes: the sidecar's first, else the PNG's."""
+    for spec in specs:
+        info = sidecar.sprites.get(spec.path)
+        if info and info.frame_w > 0 and info.frame_h > 0:
+            spec.frame_w, spec.frame_h = int(info.frame_w), int(info.frame_h)
+        else:
+            _probe_frame_size(spec, gui2d_dir)
+        if info and info.shape:
+            spec.shape = dict(info.shape)
 
 
 def _probe_frame_size(spec: ElementSpec, gui2d_dir: Path) -> None:

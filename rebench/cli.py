@@ -8,6 +8,7 @@ rule's source.
 ``apply``: run a JSON list of edit operations (see :mod:`rebench.ops`); exit 3
 when the batch is refused, in which case nothing was written.
 
+``new``: start a device from a template. ``greybox``: placeholder sprites.
 ``render``: draw a panel to PNG or SVG. ``serve``: the browser canvas.
 ``mcp``: the same operations as an MCP server on stdio.
 """
@@ -51,6 +52,21 @@ def main(argv: list[str] | None = None) -> int:
     render.add_argument("--no-overlays", action="store_true", help="hide reserved areas")
     render.add_argument("--ops", help="JSON ops to preview before drawing (not written)")
 
+    new = sub.add_parser("new", help="start a new device from a template")
+    new.add_argument("target", help="folder to create (must not exist or be empty)")
+    new.add_argument("--name", required=True, help='device name, e.g. "Grit Distortion"')
+    new.add_argument("--manufacturer", required=True)
+    new.add_argument("--product-id", default="", help="default: com.<manufacturer>.<name>")
+    new.add_argument("--height", type=int, default=1, help="rack units (1-9)")
+    new.add_argument("--template", default="effect", choices=["effect"])
+    new.add_argument("--sdk", help="SDK root, to copy the real socket/tape/placeholder art")
+
+    grey = sub.add_parser("greybox", help="draw placeholder sprites for every missing PNG")
+    grey.add_argument("project")
+    grey.add_argument("--sdk", help="SDK root, to copy the real socket/tape/placeholder art")
+    grey.add_argument("--dry-run", action="store_true")
+    grey.add_argument("--json", action="store_true")
+
     serve = sub.add_parser("serve", help="open the layout canvas in a browser")
     serve.add_argument("project")
     serve.add_argument("--host", default="127.0.0.1")
@@ -79,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "apply":
         return _apply(args)
+    if args.command in ("new", "greybox"):
+        return _greybox_or_new(args)
     if args.command == "render":
         return _render(args)
 
@@ -158,4 +176,30 @@ def _render(args) -> int:
         print(f"rebench: {exc}", file=sys.stderr)
         return 2
     print(reply["path"])
+    return 0
+
+
+def _greybox_or_new(args) -> int:
+    from .greybox import build_greybox
+    from .new import DeviceIdentity, new_device
+    try:
+        if args.command == "new":
+            result = new_device(args.target, DeviceIdentity(
+                args.name, args.manufacturer, args.product_id, args.height),
+                template=args.template, sdk_root=args.sdk)
+        else:
+            result = build_greybox(args.project, sdk_root=args.sdk, dry_run=args.dry_run)
+    except (LuaConfigError, OSError, ValueError) as exc:
+        print(f"rebench: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(result.to_dict(), indent=2))
+        return 0
+    if args.command == "new":
+        print(f"created {args.target}")
+    verb = "would draw" if getattr(args, "dry_run", False) else "drew"
+    print(f"{verb} {len(result.drawn)} placeholder sheet(s), copied {len(result.copied)} SDK "
+          f"part(s), kept {len(result.kept)} existing")
+    if args.command == "new":
+        print(f"next: python3 -m rebench serve {args.target}")
     return 0

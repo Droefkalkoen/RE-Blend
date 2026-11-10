@@ -9,8 +9,10 @@ Implementation has started with the Blender-independent layers. Repository conte
 - `Blender_RE_Plugin_Design.md` — the full design document (v0.2 draft) for RE-Blend and the
   authoritative specification to build from. Read it before doing implementation work; it is
   self-contained and every section number referenced below points into it.
-- `docs/rebench-design.md` — RE Bench, the pre-Blender layout and rules bench that will live
-  beside `reblend/` as `rebench/` (planned; see Branches).
+- `AGENTS.md` — the guide for agents: driving RE Bench and RE-Blend, and the SDK rules in our
+  own words. Keep it current when a command, op, rule or file format changes.
+- `docs/rebench-design.md` — RE Bench, the pre-Blender layout and rules bench in `rebench/`
+  (on `develop`; see Branches): what each phase delivered.
 - `ROADMAP.md` — implementation order and milestone exit criteria (M0–M4). Where it disagrees
   with the design doc, the design doc wins and the roadmap gets fixed.
 - `README.md` — public-facing overview; keep it consistent with the design doc.

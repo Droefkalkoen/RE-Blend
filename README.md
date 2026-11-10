@@ -14,6 +14,26 @@ project's Lua configuration so sizes, offsets, and frame counts are matched.
 > exit criteria. The tool lives in the **RE-Blend** tab of Blender's N-panel. See
 > [`ROADMAP.md`](ROADMAP.md) for milestone status.
 
+> **Agents start here:** [`AGENTS.md`](AGENTS.md) explains how to drive RE Bench and RE-Blend
+> and summarises the SDK rules a device must follow, without needing the SDK itself.
+
+## RE Bench: lay out a device before Blender
+
+This repository also holds **RE Bench** (`rebench/`), a layout and rules bench that shares
+RE-Blend's pure-Python core. Use it to start a device from a template, place controls on the
+panels, check every SDK and house rule, and draw grey-box placeholder art so the device builds
+in Recon before any modelling. RE-Blend's import then picks up the bench's frame sizes and
+blockout shapes.
+
+```sh
+python3 -m rebench new ../MyFx --name "Grit Distortion" --manufacturer "Terp Audio"
+python3 -m rebench serve ../MyFx        # browser canvas on http://127.0.0.1:8765/
+python3 -m rebench check ../MyFx        # every rule, exit 1 on errors
+python3 -m rebench mcp --project ../MyFx  # the same operations for AI agents
+```
+
+See [`AGENTS.md`](AGENTS.md) and [`docs/rebench-design.md`](docs/rebench-design.md).
+
 ## Why this exists
 
 Making RE GUI art by hand is challenging, since the lay-out needs to match between Blender and 
@@ -62,8 +82,8 @@ RE-Blend's answer is to prevent these mismatches:
   wrong PNG dimensions, case mismatches in paths, alpha bleed, etc.
 - **Run headless** *(planned, M3)*: `blender -b` drives the same operators with a non-zero exit
   code on validation errors.
-- **Start a greenfield device** *(planned, M4)* from a calibrated template scene and export a
-  first-pass Lua skeleton plus all the sheets.
+- **Start a greenfield device**: `rebench new` writes a template project with grey-box art,
+  and import turns its sidecar into sized guide boxes and blockout meshes.
 
 ## Using it
 

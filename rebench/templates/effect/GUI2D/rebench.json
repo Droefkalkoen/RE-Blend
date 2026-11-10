@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "sprites": {
+    "fader_onoffbypass": {"frame_w": 60, "frame_h": 240, "shape": {"type": "fader"}},
+    "fader_onoffbypass_folded": {"frame_w": 60, "frame_h": 120, "shape": {"type": "fader"}},
+    "knob_level": {"frame_w": 120, "frame_h": 120, "shape": {"type": "knob", "diameter_px": 110}}
+  },
+  "labels": [
+    {"id": "lbl-level", "panel": "front", "text": "LEVEL", "x": 1885, "y": 280, "size_px": 48,
+     "functional": true, "node": "knob_level"}
+  ]
+}

@@ -10,6 +10,8 @@ person editing in the browser cannot get different answers.
 ``layout.dry_run``     apply ops in memory: findings added and resolved
 ``layout.apply``       the same, then write ``device_2D.lua`` / ``rebench.json``
 ``view.render``        a panel as PNG (headless Chromium) or SVG
+``greybox.build``      placeholder sprites for every sheet without art
+``project.new``        a new device from a template
 =====================  =====================================================
 """
 
@@ -24,7 +26,7 @@ from .project import BenchProject
 from .render import panel_size, render_png, render_svg
 
 __all__ = ["project_load", "rules_check", "layout_dry_run", "layout_apply", "view_render",
-           "PANELS"]
+           "greybox_build", "project_new", "PANELS"]
 
 PANELS = ("front", "back", "folded_front", "folded_back")
 
@@ -107,3 +109,17 @@ def view_render(root: Path | str, panel: str, out: Path | str | None = None,
         render_png(svg, out, scale)
     reply["path"] = str(out.resolve())
     return reply
+
+
+def greybox_build(root: Path | str, sdk_root: str | None = None, dry_run: bool = False) -> dict:
+    from .greybox import build_greybox
+    return build_greybox(root, sdk_root=sdk_root, dry_run=dry_run).to_dict()
+
+
+def project_new(target: Path | str, name: str, manufacturer: str, height_ru: int = 1,
+                product_id: str = "", template: str = "effect",
+                sdk_root: str | None = None) -> dict:
+    from .new import DeviceIdentity, new_device
+    result = new_device(target, DeviceIdentity(name, manufacturer, product_id, height_ru),
+                        template=template, sdk_root=sdk_root)
+    return {"project": str(Path(target).resolve()), **result.to_dict()}

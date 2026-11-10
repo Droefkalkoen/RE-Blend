@@ -41,6 +41,7 @@ __all__ = [
     "read_device_2d",
     "read_device_2d_text",
     "read_hdgui_2d",
+    "read_hdgui_2d_text",
 ]
 
 #: Panel keys an RE project can define, in SDK convention order.
@@ -430,7 +431,16 @@ class HDGui2D:
 def read_hdgui_2d(path: Path | str) -> HDGui2D:
     """Read and parse ``GUI2D/hdgui_2D.lua``."""
     path = Path(path)
-    globals_ = _execute_sandboxed(path)
+    return _parse_hdgui_globals(path, _execute_sandboxed(path))
+
+
+def read_hdgui_2d_text(source: str, name: str = "hdgui_2D.lua") -> HDGui2D:
+    """Parse hdgui_2D source text without touching disk (``name`` labels errors)."""
+    path = Path(name)
+    return _parse_hdgui_globals(path, _execute_sandboxed_text(source, path))
+
+
+def _parse_hdgui_globals(path: Path, globals_: dict[str, Any]) -> HDGui2D:
     format_version = _require_format_version(path, globals_)
 
     panels: dict[str, HDPanel] = {}

@@ -1,0 +1,3 @@
+/build/
+/cmake-build-config.local.cmake
+GUI2D/*-reframed.png
