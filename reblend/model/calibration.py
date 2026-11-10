@@ -47,6 +47,7 @@ __all__ = [
     "is_folded",
     "ortho_scale",
     "dominant_axis",
+    "turntable_expression",
     "ORIGIN_TOP_LEFT",
     "ORIGIN_TOP_CENTER",
     "ORIGIN_CENTER",
@@ -203,6 +204,32 @@ def dominant_axis(axis: tuple[float, float, float]) -> tuple[int, float]:
         raise ValueError("axis must be non-zero")
     index = magnitudes.index(max(magnitudes))
     return index, (1.0 if axis[index] >= 0.0 else -1.0)
+
+
+def turntable_expression(
+    frames: int,
+    sweep_deg: float = DEFAULT_SWEEP_DEG,
+    axis: tuple[float, float, float] = AXIS_VECTORS[DEFAULT_CAMERA_AXIS],
+) -> tuple[int, str]:
+    """The knob rotation driver: ``(rotation_euler index, expression)``.
+
+    The SDK wants frame 0 at the minimum (about 7 o'clock) and the knob
+    turning **clockwise as seen by the viewer** as the value rises. ``axis``
+    points from the panel towards the viewer (the camera axis; −Y for the
+    §4.4 front view). A positive rotation about an axis pointing at the viewer
+    turns counter-clockwise on screen, so the clockwise sweep is the negated
+    angle about that axis: ``-sign * angle`` on the dominant Euler component.
+
+    The earlier ``+sign`` form ran backwards for the default −Y axis (frame 0
+    at 5 o'clock, counter-clockwise rise); the pilot hand-fixed its drivers
+    to ``radians(-150 + 300 * frame / 60)`` about Y (Skou feedback #17).
+    """
+    if frames < 2:
+        raise ValueError(f"a knob needs at least 2 frames, got {frames}")
+    index, sign = dominant_axis(tuple(axis))
+    half = sweep_deg / 2.0
+    expression = f"radians({-sign} * (-{half} + {sweep_deg} * frame / {frames - 1}))"
+    return index, expression
 
 
 def origin_offset_px(

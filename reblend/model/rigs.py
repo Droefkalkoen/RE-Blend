@@ -47,19 +47,14 @@ def ensure_turntable_driver(
     ``rotation_euler`` is driven in the rotor's local frame, which equals
     world for an un-rotated rotor (the M0-proven case).
     """
-    if frames < 2:
-        raise ValueError(f"a knob needs at least 2 frames, got {frames}")
-    index, sign = calibration.dominant_axis(tuple(axis))
+    index, expression = calibration.turntable_expression(frames, sweep_deg, tuple(axis))
 
     rotor.rotation_mode = "XYZ"
     clear_turntable_driver(rotor)
     fcurve = rotor.driver_add("rotation_euler", index)
     driver = fcurve.driver
     driver.type = "SCRIPTED"
-    half = sweep_deg / 2.0
-    driver.expression = (
-        f"radians({sign} * (-{half} + {sweep_deg} * frame / {frames - 1}))"
-    )
+    driver.expression = expression
 
 
 def clear_turntable_driver(rotor: "bpy.types.Object") -> bool:

@@ -55,8 +55,31 @@ this file is the in-repo summary agents work from. Agreed with the owner on 2026
    `Device.cpp` and Skou's hand-written `test/render/skou_model.cpp` can be retired.
 5. **Live DSP.**
 
+## Phase 1: what exists now
+
+```sh
+python3 -m rebench check <project root> [--json] [--strict]   # exit 1 on errors (or warnings with --strict)
+python3 -m rebench rules                                       # the catalogue, with each rule's source
+```
+
+- `rebench/catalogue.py`: one entry per finding code, RE-Blend's validator codes included, each
+  with its source (`req`, `spec`, `guide`, `obs`, `house`, `tool`). Codes that need a Blender
+  scene (state tables, rotors, shadow travel) are marked `scene_only` and skipped by the bench.
+  A test fails if `validation.py` emits a code the catalogue does not know.
+- `rebench/layout.py`: the bench's own rules: `fold-arrow`, `rack-ear`, `bypass-top-left`,
+  `device-name`, `socket-panel`, `display-panel`, `sdk-part-frames`.
+- `rebench/profile.py`: the house and observed numbers (ear keep-out, fold-arrow keep-out,
+  bypass corner, text floor), overridable per project with `rebench.profile.json` beside
+  `GUI2D/`. The fold-arrow keep-out is measured from Reason screenshots
+  ([`findings-fold-arrow.md`](findings-fold-arrow.md)), so an overlap is an error.
+- Exit check: run against Skou's files from before its readability/SDK audit commit, it reports
+  the folded tape under the fold arrow and the folded bypass fader not top-left (Skou feedback
+  #29), the two layout issues that audit fixed by hand.
+
+Not in phase 1, because the project files do not carry the information: text size (needs the
+sidecar's label sizes, phase 2), routing icons and rack-hole screws (they are panel art), and
+fader frame direction (needs the rendered frames).
+
 ## Open items
 
-- Fold-arrow keep-out rectangle: not in the SDK; measure from a Recon screenshot of a 2U device,
-  front and back, folded and unfolded.
 - Text floor for Terp devices: 43 px warning (SDK guideline) or error.

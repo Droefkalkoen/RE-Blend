@@ -459,7 +459,8 @@ def _check_shadow_owner(
                 f"between frames, but its shadow is baked into the background "
                 "— the baked shadow stays where frame 0 put it while the art "
                 "moves away from it. Set Cast Shadow Into to 'Own Sheet' so "
-                "the shadow travels in the sheet",
+                "the shadow travels in the sheet. If you just moved this element, run "
+                "Generate Rig first: its state keys may still hold the old position",
                 subject=element.path,
             )
         elif travel.depth > TRAVEL_TOLERANCE_PX:

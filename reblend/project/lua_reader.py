@@ -454,6 +454,10 @@ def _parse_panel(path: Path, name: str, table: dict[str, Any]) -> HDPanel:
 
     widgets: list[Widget] = []
     raw_widgets = attrs.get("widgets", [])
+    if raw_widgets == {}:
+        # An empty Lua table has no array part, so it converts to a dict;
+        # `widgets = {}` is still a valid, empty widget list.
+        raw_widgets = []
     if not isinstance(raw_widgets, list):
         raise LuaConfigError(path, f"panel '{name}': widgets must be an array")
     for index, entry in enumerate(raw_widgets):
