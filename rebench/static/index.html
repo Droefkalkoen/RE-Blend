@@ -69,12 +69,31 @@
     <div class="row"><input id="lt" placeholder="Text"><input id="ls" type="number" value="48" style="max-width:70px" title="Size in hi-res px"></div>
     <div class="row"><label><input type="checkbox" id="lf" checked> functional</label>
       <button id="addlabel">Click panel to place</button></div>
+    <h2>Add control</h2>
+    <div class="row"><input id="cn" placeholder="node, e.g. knob_drive">
+      <select id="cw">
+        <option value="analog_knob">knob</option>
+        <option value="toggle_button">toggle button</option>
+        <option value="momentary_button">momentary button</option>
+        <option value="sequence_fader">stepped fader</option>
+      </select></div>
+    <div class="row"><input id="ct" placeholder="name shown in Reason (optional)">
+      <input id="cs" type="number" value="3" min="2" style="max-width:60px" title="Steps (stepped fader)"></div>
+    <div class="row"><button id="addcontrol">Click panel to place</button>
+      <button id="greybox" title="Draw placeholder art for sheets without a PNG">Greybox</button></div>
+    <div class="meta">Writes the node, the widget, a property stub and its name. Grey-box the new
+      sheet after writing.</div>
     <h2>Findings</h2>
     <div id="findings"></div>
   </aside>
 </main>
 <script>
-const S = { panel: null, ops: [], frame: 0, placing: false };
+const S = { panel: null, ops: [], frame: 0, placing: null };  // placing: 'label' | 'control'
+function setPlacing(kind) {
+  S.placing = S.placing === kind ? null : kind;
+  $('addlabel').classList.toggle('on', S.placing === 'label');
+  $('addcontrol').classList.toggle('on', S.placing === 'control');
+}
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -127,11 +146,20 @@ function bindDrag() {
   const svg = $('stage').querySelector('svg'); if (!svg) return;
   svg.addEventListener('click', (evt) => {
     if (!S.placing) return;
-    const p = svgPoint(svg, evt); S.placing = false; $('addlabel').classList.remove('on');
-    const text = $('lt').value.trim(); if (!text) return;
-    stage({ op: 'label', id: 'lbl-' + Date.now().toString(36), panel: S.panel, text,
-            x: snap(p.x), y: snap(p.y), size_px: Number($('ls').value), functional: $('lf').checked },
-          (o) => o.op + (o.id || ''));
+    const p = svgPoint(svg, evt); const kind = S.placing; setPlacing(null);
+    if (kind === 'label') {
+      const text = $('lt').value.trim(); if (!text) return;
+      stage({ op: 'label', id: 'lbl-' + Date.now().toString(36), panel: S.panel, text,
+              x: snap(p.x), y: snap(p.y), size_px: Number($('ls').value), functional: $('lf').checked },
+            (o) => o.op + (o.id || ''));
+    } else {
+      const node = $('cn').value.trim(); if (!node) { $('status').textContent = 'name the node first'; return; }
+      const op = { op: 'add_control', panel: S.panel, node, widget: $('cw').value,
+                   x: snap(p.x), y: snap(p.y) };
+      if ($('ct').value.trim()) op.title = $('ct').value.trim();
+      if (op.widget === 'sequence_fader') op.steps = Number($('cs').value) || 3;
+      stage(op, (o) => `${o.op}|${o.node}`);
+    }
   });
   for (const el of svg.querySelectorAll('.node, .label')) {
     el.addEventListener('pointerdown', (evt) => {
@@ -166,7 +194,14 @@ $('zoom').addEventListener('change', applyZoom);
 window.addEventListener('resize', () => { if ($('zoom').value === 'fit') applyZoom(); });
 $('overlays').addEventListener('change', (e) => document.body.classList.toggle('hide-overlays', !e.target.checked));
 $('frame').addEventListener('change', (e) => { S.frame = Number(e.target.value) || 0; refresh(); });
-$('addlabel').addEventListener('click', () => { S.placing = !S.placing; $('addlabel').classList.toggle('on', S.placing); });
+$('addlabel').addEventListener('click', () => setPlacing('label'));
+$('addcontrol').addEventListener('click', () => setPlacing('control'));
+$('greybox').addEventListener('click', async () => {
+  const res = await fetch('/api/greybox', { method: 'POST', body: '{}' });
+  const data = await res.json();
+  await refresh();
+  $('status').textContent += res.ok ? ` · greybox: drew ${data.drawn.length}, kept ${data.kept.length}` : ' · greybox failed: ' + data.error;
+});
 $('discard').addEventListener('click', () => { S.ops = []; refresh(); });
 $('write').addEventListener('click', async () => {
   const res = await fetch('/api/write', { method: 'POST', headers: {'Content-Type': 'application/json'},

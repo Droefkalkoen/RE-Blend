@@ -249,7 +249,7 @@ def test_mcp_lists_the_design_operations():
     reply = handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     names = {t["name"] for t in reply["result"]["tools"]}
     assert names == {"project_load", "rules_check", "layout_dry_run", "layout_apply",
-                     "view_render"}
+                     "view_render", "greybox_build", "project_new"}
 
 
 def test_mcp_stdio_round_trip(tmp_path):

@@ -19,6 +19,11 @@ Operations::
     {"op": "label", "id": "lbl-tone", "panel": "front", "text": "TONE",
      "x": 990, "y": 180, "size_px": 48, "functional": true, "node": "knob_tone"}
     {"op": "remove_label", "id": "lbl-tone"}
+    {"op": "add_control", "panel": "front", "node": "knob_drive", "widget": "analog_knob",
+     "x": 900, "y": 110, "property": "drive", "title": "Drive"}   # also: steps, frames, w, h
+
+``add_control`` writes the node, the widget, and (for a new property) the
+property stub and its English name: see :mod:`rebench.stubs`.
 """
 
 from __future__ import annotations
@@ -35,8 +40,9 @@ from reblend.project.lua_writer import (
 
 from .check import BenchFinding, CheckResult, check_project
 from .profile import Profile, load_profile
-from .project import BenchProject
+from .project import DEVICE_2D, BenchProject
 from .sidecar import Label, SpriteInfo
+from .stubs import WIDGETS, ControlSpec, StubError, add_control_sources
 
 __all__ = ["OpError", "ApplyResult", "apply_ops"]
 
@@ -96,14 +102,20 @@ def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
     profile = profile or load_profile(root)
     before = check_project(project, profile)
 
-    device = project.link.device
+    current = project
+    sources = dict(project.sources)
     sidecar = copy.deepcopy(project.sidecar)
-    edits: list[OffsetEdit | FramesEdit] = []
     applied: list[str] = []
     reasons: list[str] = []
 
+    def patch(edit) -> None:
+        nonlocal current
+        sources[DEVICE_2D] = patch_device_2d(sources[DEVICE_2D], [edit]).source
+        current = current.with_changes(sources=sources, sidecar=sidecar)
+
     for i, op in enumerate(ops):
         kind = op.get("op")
+        device = current.link.device
         try:
             if kind in ("move", "nudge"):
                 panel, node = op["panel"], op["node"]
@@ -113,10 +125,10 @@ def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
                 if kind == "move":
                     x, y = float(op["x"]), float(op["y"])
                 else:
-                    pos = _node_position(project, panel, node)
+                    pos = _node_position(current, panel, node)
                     x, y = pos[0] + float(op.get("dx", 0)), pos[1] + float(op.get("dy", 0))
                 base = node_base_offset(device, panel, node) or (0.0, 0.0)
-                edits.append(OffsetEdit(panel, node, round(x - base[0]), round(y - base[1])))
+                patch(OffsetEdit(panel, node, round(x - base[0]), round(y - base[1])))
                 applied.append(f"{kind} {panel}/{node} to ({round(x)}, {round(y)})")
             elif kind == "set_frames":
                 panel, node, frames = op["panel"], op["node"], int(op["frames"])
@@ -124,8 +136,27 @@ def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
                 if n is None or not n.graphics:
                     reasons.append(f"op {i}: no sprite node '{node}' on the {panel} panel")
                     continue
-                edits.append(FramesEdit(panel, node, n.graphics[0].path, frames))
+                patch(FramesEdit(panel, node, n.graphics[0].path, frames))
                 applied.append(f"set_frames {panel}/{node} = {frames}")
+            elif kind == "add_control":
+                spec = ControlSpec(
+                    panel=op["panel"], node=op["node"], widget=op["widget"],
+                    x=int(round(float(op["x"]))), y=int(round(float(op["y"]))),
+                    bind=op.get("property", ""), title=op.get("title", ""),
+                    steps=int(op.get("steps", 3)), frames=int(op.get("frames", 0)))
+                sources.update(add_control_sources(sources, spec, root))
+                info = WIDGETS.get(spec.widget)
+                w, h = int(op.get("w", 0)), int(op.get("h", 0))
+                if not (w and h) and info:
+                    w, h = info.size
+                if w and h:
+                    sprite = sidecar.sprites.setdefault(spec.node, SpriteInfo())
+                    sprite.frame_w, sprite.frame_h = w, h
+                    if info and not sprite.shape:
+                        sprite.shape = {"type": info.shape}
+                current = current.with_changes(sources=sources, sidecar=sidecar)
+                applied.append(f"add_control {spec.panel}/{spec.node} ({spec.widget} on "
+                               f"/custom_properties/{spec.prop})")
             elif kind == "set_frame_size":
                 w, h = int(op["w"]), int(op["h"])
                 if w <= 0 or h <= 0:
@@ -158,25 +189,23 @@ def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
                 reasons.append(f"op {i}: unknown op {kind!r}")
         except (KeyError, TypeError) as exc:
             reasons.append(f"op {i} ({kind}): missing or bad field {exc}")
+        except PatchError as exc:
+            reasons.extend(f"op {i}: {r}" for r in exc.reasons)
+        except StubError as exc:
+            reasons.extend(f"op {i}: {r}" for r in exc.reasons)
 
     if reasons:
         raise OpError(reasons)
 
-    source = project.device_source
-    if edits:
-        try:
-            source = patch_device_2d(source, edits).source
-        except PatchError as exc:
-            raise OpError(exc.reasons) from exc
-
-    after_project = project.with_changes(device_source=source, sidecar=sidecar)
+    after_project = project.with_changes(sources=sources, sidecar=sidecar)
     after = check_project(after_project, profile)
 
     written = False
     if not dry_run:
-        if source != project.device_source:
-            _write_atomic(project.device_path, source)
-            written = True
+        for rel, text in sources.items():
+            if text != project.sources.get(rel):
+                _write_atomic(root / rel, text)
+                written = True
         if sidecar.to_dict() != project.sidecar.to_dict():
             sidecar.save(root)
             written = True

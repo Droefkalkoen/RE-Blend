@@ -41,7 +41,8 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-rebench = ["static/*.html"]
+rebench = ["static/*.html", "templates/*.md", "templates/*/*", "templates/*/*/*",
+           "templates/*/*/*/*"]
 
 [project.scripts]
 rebench = "rebench.cli:main"

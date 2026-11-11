@@ -102,8 +102,13 @@ def make_handler(root: Path):
                 if self.path == "/api/write":
                     result = apply_ops(root, ops, dry_run=False)
                     return self._json(200, result.to_dict())
+                if self.path == "/api/greybox":
+                    from .greybox import build_greybox
+                    return self._json(200, build_greybox(root).to_dict())
             except OpError as exc:
                 return self._json(422, {"error": "refused", "reasons": exc.reasons})
+            except (OSError, ValueError) as exc:
+                return self._json(500, {"error": str(exc)})
             self._send(404, b"not found", "text/plain")
 
     return Handler

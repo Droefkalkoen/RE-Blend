@@ -21,7 +21,7 @@ import bpy
 from mathutils import Vector
 
 from .. import __version__
-from ..model import calibration, kinds, rigs, schema, state_tables
+from ..model import blockout, calibration, kinds, rigs, schema, state_tables
 from ..project import lua_writer, merge, reporting, sdk_parts, validation
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
@@ -180,6 +180,7 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
     if is_new:
         _registration_empty(collection, spec, settings)
         _refresh_guide_boxes(collection, settings)
+        _blockout(collection, spec, settings)
     elif reposition:
         _reposition(collection, spec, settings)
     return is_new
@@ -253,6 +254,30 @@ def _center_px(spec: ElementSpec, placement) -> tuple[float, float]:
         return calibration.element_center_px(placement.x, placement.y,
                                              spec.frame_w, spec.frame_h)
     return (placement.x, placement.y)
+
+
+def _blockout(collection, spec: ElementSpec, settings) -> None:
+    """A starting mesh from RE Bench's sidecar shape, on a fresh element only.
+
+    Elements without a sidecar shape (every project the bench never touched)
+    get nothing, and an element that already exists is never given one, so
+    re-import cannot add geometry to a modelled control.
+    """
+    if not spec.shape or spec.kind == kinds.BACKDROP or not kinds.renders_art(spec.kind):
+        return
+    toward = -1.0 if settings.camera_axis != "pos_y" else 1.0
+    mesh_data = blockout.blockout_mesh(spec.shape, spec.frame_w, spec.frame_h,
+                                       settings.ppb, toward_camera=toward)
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if mesh_data is None or empty is None:
+        return
+    mesh = bpy.data.meshes.new(f"blockout_{spec.path}")
+    mesh.from_pydata(mesh_data.verts, [], mesh_data.faces)
+    mesh.update()
+    obj = bpy.data.objects.new(mesh.name, mesh)
+    obj.location = empty.location.copy()
+    obj["re_blockout"] = mesh_data.kind
+    collection.objects.link(obj)
 
 
 def _registration_empty(collection, spec: ElementSpec, settings) -> None:

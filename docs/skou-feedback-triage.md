@@ -53,8 +53,8 @@ These become entries in the catalogue that both the Blender validator and RE Ben
 
 | # | Item | How the bench covers it |
 | --- | --- | --- |
-| 15 | New nodes need hand edits to two Lua files | Bench writes property, widget and node stubs in one step |
-| 11 | Fader template seeds wrong state names and a 0 x 0 frame | Frame size and states come from `rebench.json` |
+| 15 | New nodes need hand edits to two Lua files | Done (phase 3): `add_control` writes property, widget, node and name in one step |
+| 11 | Fader template seeds wrong state names and a 0 x 0 frame | Frame size: done (phase 3, import reads `rebench.json`); state names still open |
 | 38 | Derived sheets (cropped folded fader) are not understood | Per-placement crop / frame override in the sidecar |
 | 25 | SDK parts copied at the wrong resolution | Bench SDK parts library resolves the canonical `RE2DRender/Images` files and checks size |
 | 28 | SDK jack art is not centred in its frame | Bench places SDK parts by visible (alpha) centre |
