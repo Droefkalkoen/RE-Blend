@@ -63,7 +63,7 @@ Implementation has started with the Blender-independent layers. Repository conte
 ## Commands
 
 ```sh
-pip install -e ".[dev]"       # or: pip install lupa pytest
+pip install -e ".[dev]"       # or: pip install lupa numpy pytest
 python3 -m pytest             # run the test suite (no Blender needed)
 python3 -m pytest tests/test_device_2d.py::test_knob_node   # single test
 ```

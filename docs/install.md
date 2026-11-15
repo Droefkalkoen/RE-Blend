@@ -15,6 +15,10 @@ Two things the manifest requires that trip people up:
    `ModuleNotFoundError: No module named 'lupa'`. The extension does not yet bundle the wheel
    (see *Bundling lupa* below), so for now install it into Blender's interpreter yourself.
 
+**After a Blender upgrade** (Steam updates in place) the new version starts with a fresh
+profile and its own Python: repeat sections 1 and 2 for the new version number. The junction
+and `lupa` live per version, so 5.3 does not see what was set up for 5.2.
+
 Substitute your own Blender path throughout — the examples use a Steam install of Blender 5.2 on
 Windows (`E:\SteamLibrary\steamapps\common\Blender\5.2\`).
 

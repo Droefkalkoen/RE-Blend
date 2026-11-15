@@ -107,7 +107,8 @@ python3 -m rebench mcp [--project <project root>]              # MCP server on s
 - `rebench/agent.py` + `rebench/mcp_server.py`: the agent operations `project_load`,
   `rules_check`, `layout_dry_run`, `layout_apply`, `view_render` (underscores, since not every
   MCP client accepts dots). `view_render` returns the PNG as an image so an agent can look.
-  Standard library only; Playwright is needed for PNGs alone (`pip install -e ".[screenshots]"`).
+  Beyond `lupa` and `numpy` (both required: `pip install -e .`), standard library only;
+  Playwright is needed for PNGs alone (`pip install -e ".[screenshots]"`).
 - Exit check: on a copy of Skou's files, dragging `meter_input` 60 px right in the canvas
   resolves the rack-ear finding and **Write to Lua** changes that one offset, comment intact;
   the same move by `layout_dry_run` and a `view_render` screenshot work over MCP.
@@ -141,6 +142,15 @@ python3 -m rebench greybox <project root> [--sdk <SDK root>] [--dry-run]
 - Exit check (to run on the build machine): `rebench new`, build, open in Recon; then import into
   Blender and see the blockouts. In this repo the template's C++ passes a syntax check against
   `Jukebox.h` 4.6.0 and its Lua loads.
+
+Exit check run on the build machine (2026-11-15, `develop` at `62684c1`): `rebench new` with
+`--sdk` drew 8 placeholders and copied 2 SDK parts, `rebench check` reported no findings, the
+re-cmake build configured and `re.bat install` installed it as `com.terpaudio.BenchTest`
+(one compiler warning: unused `mSampleRate`). Importing it into Blender 5.2 at 1U gave 10
+elements with blockouts for `knob_level` (120 x 120), `fader_onoffbypass` (60 x 240) and
+`fader_onoffbypass_folded` (60 x 120). Still open: opening it in Recon by hand, and
+`re.bat validate` (Recon's path was not configured). The run also showed `numpy` must be a
+required dependency, not a dev one.
 
 Not yet: an instrument template, removing controls, routing-icon art and its check.
 
