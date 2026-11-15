@@ -53,7 +53,7 @@ is never checked in one tool and missed in the other.
 ## 2. The workflow, start to finish
 
 ```sh
-pip install -e ".[dev,screenshots]"                # once; or: pip install lupa pytest playwright
+pip install -e ".[dev,screenshots]"                # once; or: pip install lupa numpy pytest playwright
 
 # 1. Start a device (or skip to step 2 on an existing project)
 python3 -m rebench new ../MyFx --name "Grit Distortion" --manufacturer "Terp Audio" [--height 2]

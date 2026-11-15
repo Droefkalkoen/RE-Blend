@@ -68,6 +68,15 @@ the M0 multiples-of-5 rule enforced in `render/validators.py`). What remains is 
 the pilot: import the pilot project, model into the imported boxes, and get the phase-1 sheet
 list through Render All Sheets + Validate with zero errors on a machine with Blender 4.2 LTS+.
 
+**Exit check run, 2026-11-15** (on a copy of the pilot, `main` at `d2131f2`, Blender 5.2
+background process): all 31 sheets rendered with no render errors (43.5 min) and RE2DRender
+compiled the result cleanly, but Validate reported **3 errors**, all from the pilot's `.blend`
+lagging its Lua rather than from RE-Blend: two sheets with no element yet (`sel_polarity`,
+`fader_onoffbypass_folded`) and that folded fader's node overhanging the 150 px folded panel.
+Next: a Check for Differences / Apply Choices pass on the pilot's `.blend`, then re-run. The
+run also surfaced false `shadow-owner` errors on the first Validate after loading a file,
+fixed on `develop` (hidden state objects were sampled at their stale saved position).
+
 Worth saying out loud: the MVP is already useful. Even without write-back, "model in the boxes,
 press render, get correct sheets" replaces the entire manual crop-and-stack workflow.
 
@@ -99,6 +108,12 @@ repo). Write-path features are gated on interop fixtures in the test suite: the 
 decoys, single-line nodes, quoted keys, CRLF) — every patch must round-trip through the real
 Lua interpreter byte-exact outside the edited literals. What remains is the pilot pass: move a
 control, export, and confirm in RE2DPreview and RE Edit on a machine with Blender 4.2 LTS+.
+
+**Exit check run, 2026-11-15** (same pilot copy): moving `meter_input` +20 px in Blender and
+running Write Layout to Lua patched exactly one line of `device_2D.lua`
+(`{ 145, 175 }` → `{ 165, 175 }`), comments and layout byte-identical, verified by re-parse;
+re-checking differences no longer listed the element, and RE2DRender compiled cleanly. Still
+open: the visual confirmation in RE2DPreview, and RE Edit loading the patched file.
 
 ## M3 — Production: make it a build step
 

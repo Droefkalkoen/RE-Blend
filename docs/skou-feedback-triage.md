@@ -28,7 +28,7 @@ reproduce and test; not fixed in a headless container).
 | 17 | Knob turntable runs backwards for a `neg_y` camera | `model/rigs.py` driver expression | fixed: `calibration.turntable_expression`, tested for all six camera axes |
 | 22, 34 | Copied elements share state actions; Generate Rig rewrites the original's keys | `model/rigs.py`: own action per element, or refuse | open |
 | 37 | False "shadow-owner: slides N px" after moving an element | `project/validation.py` `_check_shadow_owner` | partly: the check measures live, so the slide is real until the state keys are regenerated; the message now says to run Generate Rig |
-| 35 | Hidden objects report stale bounds to placement helpers | helpers that place state-dependent objects | open |
+| 35 | Hidden objects report stale bounds to placement helpers | helpers that place state-dependent objects | partly: the frame-travel measurement behind `shadow-owner` now skips objects hidden at a frame (they gave false errors on the first Validate after loading); the placement helpers are still open |
 | 6 | Drivers invalid after `material.copy()`; Repair Channels could re-validate | `ui/operators.py` repair | open |
 | 23 | A failing step after a render goes unnoticed: add a render-complete flag | `render/renderer.py` | open |
 

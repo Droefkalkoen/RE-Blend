@@ -2177,6 +2177,8 @@ def _measure_frame_travel(context, collections, settings
                 for obj in collection.all_objects:
                     if obj.type not in _GEOMETRY_TYPES or "re_guide" in obj:
                         continue
+                    if not _visible_at_frame(obj):
+                        continue
                     centre = _world_bbox_centre(obj.evaluated_get(depsgraph))
                     per_object.setdefault(obj.name, []).append(
                         (centre.dot(axis), centre.dot(u), centre.dot(v))
@@ -2204,6 +2206,22 @@ def _camera_basis(collection, settings) -> tuple[Vector, Vector, Vector]:
     axis = axis.normalized()
     u = axis.orthogonal().normalized()
     return axis, u, axis.cross(u).normalized()
+
+
+def _visible_at_frame(obj) -> bool:
+    """Whether ``obj`` has a position worth sampling at the current frame.
+
+    A state table hides objects per frame (``hide_viewport`` keyed with
+    ``hide_render``), and the viewport depsgraph does not evaluate a hidden
+    object: ``evaluated_get`` then hands back the original, whose
+    ``matrix_world`` is whatever was last written, on a freshly opened file
+    the value saved with it, which can be from before the element moved.
+    Sampling that reported travel of hundreds of pixels on the first Validate
+    after loading and none on the second, once the visible frames had
+    refreshed it (Skou exit check, 2026-11-15). A hidden object casts nothing
+    in that frame, so leaving its sample out loses no shadow information.
+    """
+    return obj.visible_get()
 
 
 def _world_bbox_centre(obj) -> Vector:

@@ -13,14 +13,15 @@ requires-python = ">=3.11"
 dependencies = [
     # Bundled as a wheel in the Blender extension; a plain dependency here.
     "lupa>=2.0",
+    # Ships with Blender (§8), but RE Bench runs in plain CPython and needs it
+    # (reading PNG sizes, drawing grey-box sheets): without it `rebench` fails
+    # on a clean Python with ModuleNotFoundError.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    # Ships with Blender (§8); a dev dependency here so the render layer's
-    # pure-numpy stitcher/validators are testable in plain CPython.
-    "numpy>=1.24",
 ]
 # RE Bench PNG screenshots (``rebench render``, the MCP ``view_render`` tool)
 # drive a headless Chromium; SVG output and everything else need no extra.
