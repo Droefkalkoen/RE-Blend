@@ -93,16 +93,53 @@ def validate_link(
     link: link_mod.ProjectLink,
     elements: Sequence[schema.ElementData],
     scene: SceneInfo | None = None,
+    *,
+    rules: bool = False,
+    profile=None,
 ) -> Report:
-    """Validate a scene's elements against a loaded project."""
-    return validate_project(
+    """Validate a scene's elements against a loaded project.
+
+    ``rules`` adds the panel-layout rules of :mod:`reblend.project.layout`
+    (fold arrow, rack ears, bypass corner, text size, screws, routing icons,
+    SDK part sizes), so RE-Blend's Validate and RE Bench's ``check`` run one
+    rule engine. ``profile`` is the house profile (defaults when None).
+    """
+    report = validate_project(
         device=link.device,
         hdgui=link.hdgui,
         elements=elements,
         gui2d_dir=link.gui2d_dir,
         property_steps=link.property_steps,
         scene=scene,
+        derived={path: spec.derived_from for path, spec in link.derived.items()},
     )
+    _check_derived(report, link)
+    if rules:
+        from .layout import check_rules
+
+        for f in check_rules(link, profile):
+            report.add(f.severity, f.code, f.message, f.subject, f.panel)
+    return report
+
+
+def _check_derived(report: Report, link: link_mod.ProjectLink) -> None:
+    """A derived sheet's source exists and its crop fits inside the source
+    frame (sidecar ``derive_from`` / ``crop``, Skou feedback #38)."""
+    for path, spec in link.derived.items():
+        source = link.spec(spec.derived_from)
+        if source is None or source.derived_from:
+            report.add(ERROR, "derived",
+                       f"'{path}' is derived from '{spec.derived_from}', which is not a "
+                       "rendered sprite in device_2D.lua", subject=path)
+            continue
+        x, y, w, h = spec.crop or (0, 0, 0, 0)
+        if not (source.frame_w and source.frame_h):
+            continue  # frame-size reports the unsized source
+        if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > source.frame_w or y + h > source.frame_h:
+            report.add(ERROR, "derived",
+                       f"crop {[x, y, w, h]} of '{path}' does not fit inside a "
+                       f"{source.frame_w}x{source.frame_h} frame of '{source.path}'",
+                       subject=path)
 
 
 def validate_project(
@@ -112,6 +149,7 @@ def validate_project(
     gui2d_dir: Path | None = None,
     property_steps: Mapping[str, int] | None = None,
     scene: SceneInfo | None = None,
+    derived: Mapping[str, str] | None = None,
 ) -> Report:
     report = Report()
     by_path = {element.path: element for element in elements}
@@ -119,13 +157,15 @@ def validate_project(
     lua_paths = {graphic.path for _, _, graphic in lua_graphics}
 
     _check_duplicate_paths(report, elements)
-    _check_art_coverage(report, lua_graphics, by_path, lua_paths, elements)
+    _check_art_coverage(report, lua_graphics, by_path, lua_paths, elements,
+                        dict(derived or {}))
     _check_widget_links(report, device, hdgui)
     _check_frame_contracts(report, device, hdgui, dict(property_steps or {}))
     _check_panel_requirements(report, device, hdgui)
     _check_kinds(report, device, hdgui, elements)
     _check_placement_drift(report, elements)
     _check_shadow_owner(report, elements)
+    _check_fader_direction(report, elements)
     _check_state_tables(report, elements)
     _check_rotors(report, elements)
     _check_frame_geometry(report, elements)
@@ -184,10 +224,39 @@ def _check_art_coverage(
     by_path: Mapping[str, schema.ElementData],
     lua_paths: set[str],
     elements: Sequence[schema.ElementData],
+    derived: Mapping[str, str] | None = None,
 ) -> None:
+    derived = derived or {}
     missing_seen: set[str] = set()
     for panel, node, graphic in lua_graphics:
         element = by_path.get(graphic.path)
+        source = by_path.get(derived.get(graphic.path, ""))
+        if element is None and source is not None:
+            # A derived sheet (sidecar derive_from): the renderer cuts it
+            # from its source's frames, so the frame counts must agree.
+            if source.frames != graphic.frames:
+                report.add(
+                    ERROR,
+                    "frame-count",
+                    f"derived sheet '{graphic.path}' is cut from '{source.path}', "
+                    f"which renders {source.frames} frames, but device_2D node "
+                    f"'{node.name}' declares frames = {graphic.frames}",
+                    subject=graphic.path,
+                    panel=panel,
+                )
+            continue
+        if element is None and graphic.path in derived:
+            if graphic.path not in missing_seen:
+                missing_seen.add(graphic.path)
+                report.add(
+                    ERROR,
+                    "missing-art",
+                    f"'{graphic.path}' is derived from '{derived[graphic.path]}', "
+                    "but no RE Element in the scene produces that source sheet",
+                    subject=graphic.path,
+                    panel=panel,
+                )
+            continue
         if element is None:
             if graphic.path not in missing_seen:
                 missing_seen.add(graphic.path)
@@ -472,6 +541,33 @@ def _check_shadow_owner(
                 "shadow baked into the background — the real shadow would "
                 "shift and soften, the baked one cannot. Usually fine for a "
                 "button cap; set Cast Shadow Into to 'Own Sheet' if the shift shows",
+                subject=element.path,
+            )
+
+
+def _check_fader_direction(report: Report, elements: Sequence[schema.ElementData]) -> None:
+    """A sequence_fader's handle starts leftmost / at the bottom (Skou #8).
+
+    The scripting specification: "The handle must be in the leftmost / bottom
+    position at the first animation frame", and ``inverted`` only flips which
+    value shows which frame, so the art rule is the same either way. Read
+    from the measured travel, so it needs a Blender scene.
+    """
+    for element in elements:
+        travel = element.frame_travel
+        if element.kind != kinds.FADER_HANDLE or travel is None or not travel.across:
+            continue
+        vertical = abs(travel.slide_v) >= abs(travel.slide_u)
+        slide = travel.slide_v if vertical else travel.slide_u
+        if slide < 0:
+            where = "at the top" if vertical else "on the right"
+            want = "bottom" if vertical else "leftmost"
+            report.add(
+                ERROR,
+                "fader-direction",
+                f"the handle starts {where} and ends {'at the bottom' if vertical else 'on the left'}; "
+                f"frame 0 must show it in the {want} position, also with "
+                "inverted = true — use Reverse States, then Generate Rig",
                 subject=element.path,
             )
 

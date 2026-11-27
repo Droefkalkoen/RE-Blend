@@ -89,7 +89,7 @@ python3 -m rebench render <project root> --panel front --out front.png [--scale 
 python3 -m rebench mcp [--project <project root>]              # MCP server on stdio
 ```
 
-- `rebench/sidecar.py`: `GUI2D/rebench.json` (schema version 1): per-sprite frame size and
+- `rebench/sidecar.py`: `GUI2D/rebench.json` (schema version 1; now 3, see phase 4): per-sprite frame size and
   blockout shape, and labels (text, panel, position, size in px, functional or decorative).
   Missing means empty, so existing projects need no change. Sidecar frame sizes win over the
   PNG probe, which is how a designer-set size survives a stale render.
@@ -152,7 +152,24 @@ elements with blockouts for `knob_level` (120 x 120), `fader_onoffbypass` (60 x 
 `re.bat validate` (Recon's path was not configured). The run also showed `numpy` must be a
 required dependency, not a dev one.
 
-Not yet: an instrument template, removing controls, routing-icon art and its check.
+## Phase 4: what exists now (2026-11-27)
+
+- **One rule engine.** `layout.py`, `profile.py` and `catalogue.py` moved to
+  `reblend/project/` (the `rebench` modules re-export them). `validate_link(..., rules=True)`
+  runs them, so RE-Blend's Validate and `rebench check` report the same codes.
+- New rules: `rack-screws` (obs, profile hole rows), `routing-icons` (req: an effect shows a
+  mono-input and a stereo-input `Routing_Icon_*`, matching its `add_stereo_effect_routing_hint`
+  type), `sdk-part-size` (req: stock parts are the hi-res SDK images).
+- Sidecar version 3: `derive_from` / `crop` on sprites (v2) and an `art` list of marks painted
+  into panel art (screws, routing icons) with their centres.
+- New ops: `remove_control` (undoes `add_control`, optionally dropping an unshared property and
+  its texts), `derive` / `underive`, `centre` (optionally on the visible art, from the sheet's
+  alpha: the SDK jack art sits about 5 px left of centre), `art` / `remove_art`.
+- `rebench new --template instrument`: a note-playing `instrument` (monophonic sine, Level knob,
+  outputs, stereo instrument routing hint), also clean under `rebench check`. The effect
+  template declares its two routing icons in the sidecar.
+- `reblend/project/png_meta.read_png_pixels` decodes 8-bit PNGs without Blender, for the visible
+  centre.
 
 ## Open items
 

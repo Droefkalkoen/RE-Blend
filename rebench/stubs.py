@@ -28,7 +28,8 @@ from reblend.project.lua_writer import _CODE, _Anchors, PatchError
 
 from .project import DEVICE_2D, HDGUI_2D, MOTHERBOARD, TEXTS
 
-__all__ = ["StubError", "ControlSpec", "WIDGETS", "add_control_sources", "property_tags"]
+__all__ = ["StubError", "ControlSpec", "WIDGETS", "add_control_sources", "remove_control_sources",
+           "property_tags"]
 
 #: Node-name prefixes dropped when the property name is derived from the node.
 _PREFIXES = {"knob", "btn", "button", "fader", "sel", "led", "lamp", "toggle", "switch"}
@@ -392,3 +393,186 @@ def _verify(out: dict[str, str], spec: ControlSpec, root: Path, stubbed: bool) -
         problems.append(f"an edited file no longer loads: {exc}")
     if problems:
         raise StubError(problems)
+
+
+# ---------------------------------------------------------------------------
+# Removing a control
+# ---------------------------------------------------------------------------
+
+
+def _cut(source: str, start: int, end: int) -> str:
+    """Remove ``source[start:end]`` (one table entry) with its separator.
+
+    An entry alone on its lines takes those lines with it; an entry sharing a
+    line loses its trailing comma and one space. Nothing else is reformatted.
+    """
+    tail = end
+    while tail < len(source) and source[tail] in " \t":
+        tail += 1
+    if tail < len(source) and source[tail] in ",;":
+        tail += 1
+    line_start = _line_start(source, start)
+    eol = source.find("\n", tail)
+    eol = len(source) if eol < 0 else eol
+    if not source[line_start:start].strip() and not source[tail:eol].strip():
+        return source[:line_start] + source[min(eol + 1, len(source)):]
+    while tail < len(source) and source[tail] == " ":
+        tail += 1
+    return source[:start] + source[tail:]
+
+
+def _entry_spans(anchors: _Anchors, key: str, start: int, end: int) -> list[tuple[int, int]]:
+    """``(entry start, closing brace + 1)`` of each ``key = { ... }`` in code."""
+    pattern = re.compile(r"(?<![\w.])%s\s*=\s*(?P<brace>\{)" % re.escape(key))
+    spans = []
+    for m in anchors.code_matches(pattern, start, end):
+        open_idx, close_idx = anchors.table_span(m.start("brace"))
+        spans.append((m.start(), close_idx + 1))
+    return spans
+
+
+def remove_device_node(source: str, panel: str, node: str, reasons: list[str]) -> str:
+    anchors = _Anchors(source)
+    span = _one(anchors.find_key_tables(panel, 0, len(source), at_depth=0),
+                f"'{panel} = {{' tables in device_2D.lua", reasons)
+    if span is None:
+        return source
+    entry = _one(_entry_spans(anchors, node, span[0] + 1, span[1]),
+                 f"'{node} = {{' nodes on the {panel} panel of device_2D.lua", reasons)
+    if entry is None:
+        return source
+    return _cut(source, *entry)
+
+
+_WIDGET_CALL = re.compile(r"(?<![\w.])jbox\s*\.\s*(?P<kind>\w+)\s*\(?\s*(?P<brace>\{)")
+_NODE_ATTR = r"""node\s*=\s*["']%s["']"""
+
+
+def remove_hdgui_widgets(source: str, panel: str, node: str, reasons: list[str]) -> tuple[str, int]:
+    """Remove every widget on ``panel`` whose graphics name ``node``."""
+    anchors = _Anchors(source)
+    panel_span = _one(_call_table_spans(anchors, panel, "jbox.panel", 0, len(source), 0),
+                      f"'{panel} = jbox.panel {{' tables in hdgui_2D.lua", reasons)
+    if panel_span is None:
+        return source, 0
+    widgets = _one(anchors.find_key_tables("widgets", panel_span[0], panel_span[1],
+                                           at_depth=anchors.depths[panel_span[0]] + 1),
+                   f"'widgets = {{' tables in the {panel} panel of hdgui_2D.lua", reasons)
+    if widgets is None:
+        return source, 0
+    depth = anchors.depths[widgets[0]] + 1
+    node_re = re.compile(_NODE_ATTR % re.escape(node))
+    doomed = []
+    for m in anchors.code_matches(_WIDGET_CALL, widgets[0] + 1, widgets[1]):
+        brace = m.start("brace")
+        if anchors.depths[brace] != depth:
+            continue
+        open_idx, close_idx = anchors.table_span(brace)
+        end = close_idx + 1
+        if "(" in source[m.start():brace]:
+            # jbox.x({ ... }) call syntax: take the closing parenthesis too
+            close_paren = source.find(")", end)
+            if close_paren >= 0 and not source[end:close_paren].strip():
+                end = close_paren + 1
+        if any(anchors.mask[x.start()] == _CODE
+               for x in node_re.finditer(source, open_idx, close_idx)):
+            doomed.append((m.start(), end))
+    for start, end in reversed(doomed):
+        source = _cut(source, start, end)
+    return source, len(doomed)
+
+
+def remove_property(source: str, name: str, reasons: list[str]) -> str:
+    anchors = _Anchors(source)
+    props = _one(_call_table_spans(anchors, "custom_properties", "jbox.property_set",
+                                   0, len(source), 0),
+                 "'custom_properties = jbox.property_set {' in motherboard_def.lua", reasons)
+    if props is None:
+        return source
+    pattern = re.compile(r"(?<![\w.])%s\s*=\s*jbox\s*\.\s*\w+\s*\(?\s*(?P<brace>\{)"
+                         % re.escape(name))
+    found = []
+    for m in anchors.code_matches(pattern, props[0], props[1]):
+        _o, close_idx = anchors.table_span(m.start("brace"))
+        end = close_idx + 1
+        rest = source[end:end + 8].lstrip(" \t")
+        if rest.startswith(")"):
+            end = source.index(")", end) + 1
+        found.append((m.start(), end))
+    entry = _one(found, f"'{name} = jbox.<type> {{' properties in motherboard_def.lua", reasons)
+    return source if entry is None else _cut(source, *entry)
+
+
+def remove_texts(source: str, keys: list[str]) -> str:
+    """Remove ``key = "..."`` lines from ``texts = {`` (absent keys are fine)."""
+    for key in keys:
+        anchors = _Anchors(source)
+        spans = anchors.find_key_tables("texts", 0, len(source), at_depth=0)
+        if len(spans) != 1:
+            return source
+        pattern = re.compile(r"""(?<![\w.])(?:%s|\[\s*["']%s["']\s*\])\s*=\s*"(?:[^"\\\n]|\\.)*\""""
+                             % (re.escape(key), re.escape(key)))
+        matches = anchors.code_matches(pattern, spans[0][0], spans[0][1])
+        if len(matches) == 1:
+            source = _cut(source, matches[0].start(), matches[0].end())
+    return source
+
+
+def remove_control_sources(sources: dict[str, str], panel: str, node: str, root: Path,
+                           drop_property: bool = False) -> tuple[dict[str, str], list[str]]:
+    """Remove a node and the widgets drawn on it; with ``drop_property``, also
+    the property they bind and its texts, when nothing else binds it.
+
+    Returns ``(edited sources, notes)``. Raises :class:`StubError` on any
+    ambiguity. Property tags are permanent once a device is released, so only
+    drop a property from a device that has never shipped.
+    """
+    reasons: list[str] = []
+    notes: list[str] = []
+    device = read_device_2d_text(sources[DEVICE_2D], str(root / DEVICE_2D))
+    hdgui = read_hdgui_2d_text(sources[HDGUI_2D], str(root / HDGUI_2D))
+    if device.node(panel, node) is None:
+        raise StubError([f"no node '{node}' on the {panel} panel"])
+    hd_panel = hdgui.panels.get(panel)
+    bound = [w for w in (hd_panel.widgets if hd_panel else []) if w.node == node]
+    props = sorted({w.value.rsplit("/", 1)[-1] for w in bound
+                    if isinstance(w.value, str) and w.value.startswith("/custom_properties/")})
+
+    out = {DEVICE_2D: remove_device_node(sources[DEVICE_2D], panel, node, reasons)}
+    out[HDGUI_2D], removed = remove_hdgui_widgets(sources[HDGUI_2D], panel, node, reasons)
+    if removed != len(bound):
+        reasons.append(f"found {removed} of the {len(bound)} widgets on '{node}' to remove; "
+                       "remove them by hand")
+    if drop_property and props:
+        others = {w.value for p in hdgui.panels.values() for w in p.widgets
+                  if not (p is hd_panel and w.node == node) and isinstance(w.value, str)}
+        for name in props:
+            if f"/custom_properties/{name}" in others:
+                notes.append(f"kept property '{name}': other widgets still bind it")
+                continue
+            if MOTHERBOARD not in sources:
+                continue
+            out[MOTHERBOARD] = remove_property(out.get(MOTHERBOARD, sources[MOTHERBOARD]),
+                                               name, reasons)
+            if TEXTS in sources:
+                keys = [name] + [f"{name}_{i + 1}" for i in range(64)]
+                out[TEXTS] = remove_texts(out.get(TEXTS, sources[TEXTS]), keys)
+            notes.append(f"removed property '{name}' (its tag is free again only while "
+                         "the device is unreleased)")
+    if reasons:
+        raise StubError(reasons)
+    try:
+        if read_device_2d_text(out[DEVICE_2D], str(root / DEVICE_2D)).node(panel, node):
+            reasons.append("device_2D.lua re-parsed with the node still there")
+        hd = read_hdgui_2d_text(out[HDGUI_2D], str(root / HDGUI_2D))
+        if any(w.node == node for w in hd.panels[panel].widgets):
+            reasons.append("hdgui_2D.lua re-parsed with a widget still on the node")
+        if MOTHERBOARD in out:
+            _execute_sandboxed_text(out[MOTHERBOARD], root / MOTHERBOARD)
+        if TEXTS in out:
+            _execute_sandboxed_text(out[TEXTS], root / TEXTS)
+    except (LuaConfigError, PatchError, KeyError) as exc:
+        reasons.append(f"an edited file no longer loads: {exc}")
+    if reasons:
+        raise StubError(reasons)
+    return {k: v for k, v in out.items() if v != sources.get(k)}, notes

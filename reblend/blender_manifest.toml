@@ -18,10 +18,11 @@ blender_version_min = "4.2.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
 
-# The lupa wheel (sandboxed Lua interpreter for reading the RE project's
-# GUI2D/*.lua files, design §6.4) is bundled at packaging time, one wheel per
-# supported platform. numpy ships with Blender and is not bundled.
-# wheels = ["./wheels/lupa-<version>-<platform>.whl"]
+# The lupa wheels (sandboxed Lua interpreter for reading the RE project's
+# GUI2D/*.lua files, design §6.4) are added at packaging time by
+# tools/package.py, which writes `platforms` and `wheels` into a staged copy of
+# this file, one zip per platform. Kept out of this copy so a linked source
+# folder still loads. numpy ships with Blender and is not bundled.
 
 [permissions]
-files = "Read and write the linked RE project's GUI2D sprite sheets and layout Lua files"
+files = "Read and write the RE project's sprite sheets and layout Lua"

@@ -24,6 +24,7 @@ from reblend.project.lua_reader import LuaConfigError
 
 from .catalogue import RULES
 from .check import run_checks
+from .new import TEMPLATES
 from .profile import load_profile
 
 
@@ -58,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     new.add_argument("--manufacturer", required=True)
     new.add_argument("--product-id", default="", help="default: com.<manufacturer>.<name>")
     new.add_argument("--height", type=int, default=1, help="rack units (1-9)")
-    new.add_argument("--template", default="effect", choices=["effect"])
+    new.add_argument("--template", default="effect", choices=list(TEMPLATES))
     new.add_argument("--sdk", help="SDK root, to copy the real socket/tape/placeholder art")
 
     grey = sub.add_parser("greybox", help="draw placeholder sprites for every missing PNG")

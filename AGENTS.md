@@ -149,7 +149,7 @@ folded_back = jbox.panel { graphics = { node = "Panel_Folded_Back" },
 | `rebench rules` | The catalogue: code, source tag, title | 0 |
 | `rebench apply <root> <ops.json or -> [--dry-run] [--json]` | Apply a batch of edit operations | 0, 2 unreadable, **3 refused (nothing written)** |
 | `rebench render <root> --panel P --out F.png [--scale 0.5] [--frame N] [--ops ops.json] [--no-overlays]` | Screenshot a panel (`.svg` output needs no browser) | 0, 2, 3 |
-| `rebench new <dir> --name N --manufacturer M [--height U] [--product-id ID] [--sdk S]` | New device from the effect template | 0, 2 |
+| `rebench new <dir> --name N --manufacturer M [--template effect\|instrument] [--height U] [--product-id ID] [--sdk S]` | New device from a template | 0, 2 |
 | `rebench greybox <root> [--sdk S] [--dry-run] [--json]` | Placeholder sheets for every node without art | 0, 2 |
 | `rebench serve <root> [--port 8765]` | The browser canvas | runs until stopped |
 | `rebench mcp [--project <root>]` | MCP server on stdio | runs until stdin closes |
@@ -176,7 +176,14 @@ move a control an earlier op added.
   {"op": "set_shape", "sprite": "knob_drive", "shape": {"type": "knob", "diameter_px": 100}},
   {"op": "label", "id": "lbl-drive", "panel": "front", "text": "DRIVE", "x": 1370, "y": 260,
    "size_px": 48, "functional": true, "node": "knob_drive"},
-  {"op": "remove_label", "id": "lbl-drive"}
+  {"op": "remove_label", "id": "lbl-drive"},
+  {"op": "remove_control", "panel": "front", "node": "sel_mode", "drop_property": true},
+  {"op": "derive", "sprite": "fader_folded", "from": "fader", "crop": [0, 60, 60, 120]},
+  {"op": "underive", "sprite": "fader_folded"},
+  {"op": "centre", "panel": "back", "node": "socket_in_left", "x": 653, "y": 405, "visible": true},
+  {"op": "art", "panel": "back", "kind": "routing_icon", "name": "Routing_Icon_03", "x": 800, "y": 560},
+  {"op": "art", "panel": "front", "kind": "screw", "name": "screw_tl", "x": 80, "y": 56},
+  {"op": "remove_art", "panel": "front", "kind": "screw", "name": "screw_tl"}
 ]
 ```
 
@@ -197,6 +204,18 @@ move a control an earlier op added.
   - The device's C++ still has to read the new property. That part is yours.
 - **`move`** takes the absolute top-left position. **`nudge`** moves relative to the current
   position. Both patch only the `offset` numbers, and comments survive.
+- **`remove_control`** undoes `add_control`: node, widget, and with `drop_property` also an
+  unshared property and its texts. A property other widgets still bind is kept.
+- **`derive`** marks a sheet as cut from another sprite's frames (the folded On/Off/Bypass
+  fader is the front fader cropped to `[x, y, w, h]`). RE-Blend renders the source and writes
+  the cropped sheet; the derived sheet needs no element. **`underive`** turns it back into a
+  rendered sheet.
+- **`centre`** puts a node's centre at a point. With `visible: true` it centres the art the eye
+  sees, from the sheet's alpha: the SDK jack art sits about 5 px left of its frame centre.
+- **`art`** declares a mark painted into a backdrop, which the Lua files cannot see: a
+  `routing_icon` (named `Routing_Icon_01`…`05` or by title, such as `Routing_Icon_TrueStereo`)
+  or a `screw`, with its centre. The routing-icon and screw rules read these. **`remove_art`**
+  removes one by panel, kind and name.
 - **Labels** live only in the sidecar. They are panel text (silk) with a size in hi-res pixels,
   so the text-size rule can run before any art exists. Set `functional: false` for decorative
   text such as logos.
@@ -222,8 +241,10 @@ Use `added` and `resolved` to judge each change. A refused batch returns
 ```
 
 `subject` is a node, sprite path or label id. `source` is the tag from the table at the top.
-`python3 -m rebench rules` lists every code. Codes marked "Blender scene only" (state tables,
-rotors, shadow travel) are checked by RE-Blend's Validate, not by the bench.
+`python3 -m rebench rules` lists every code. The bench and RE-Blend's Validate run **one rule
+engine** (`reblend/project/layout.py` on top of `reblend/project/validation.py`), so a finding
+means the same in both. Codes marked "Blender scene only" (state tables, rotors, shadow travel,
+fader direction) need a scene and are checked by Validate only.
 
 ### MCP tools (`python3 -m rebench mcp --project <root>`)
 
@@ -235,7 +256,7 @@ rotors, shadow travel) are checked by RE-Blend's Validate, not by the bench.
 | `layout_apply` | `project?`, `ops` | The result above |
 | `view_render` | `project?`, `panel`, `scale=0.5`, `frame=0`, `overlays=true`, `ops?`, `out?` | **The PNG as an image**, plus the panel's findings |
 | `greybox_build` | `project?`, `sdk?`, `dry_run?` | What was drawn, copied and kept |
-| `project_new` | `target`, `name`, `manufacturer`, `height_ru?`, `product_id?`, `sdk?` | The new project's path |
+| `project_new` | `target`, `name`, `manufacturer`, `height_ru?`, `product_id?`, `sdk?`, `template?` | The new project's path |
 
 Client config: `{"command": "python3", "args": ["-m", "rebench", "mcp", "--project", "/path/to/device"]}`,
 with the RE-Blend checkout as the working directory or on `PYTHONPATH`.
@@ -247,11 +268,15 @@ same `ops`. Look at the image and the `added` findings, adjust, and finish with 
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "sprites": {"knob_drive": {"frame_w": 120, "frame_h": 120,
-                             "shape": {"type": "knob", "diameter_px": 100}}},
+                             "shape": {"type": "knob", "diameter_px": 100}},
+              "fader_folded": {"frame_w": 60, "frame_h": 120,
+                               "derive_from": "fader", "crop": [0, 60, 60, 120]}},
   "labels":  [{"id": "lbl-drive", "panel": "front", "text": "DRIVE", "x": 1370, "y": 260,
                "size_px": 48, "functional": true, "node": "knob_drive"}],
+  "art":     [{"panel": "back", "kind": "routing_icon", "name": "Routing_Icon_03",
+               "x": 800, "y": 560}],
   "greybox": {"knob_drive": "<sha256 of the placeholder PNG>"}
 }
 ```
@@ -262,21 +287,25 @@ same `ops`. Look at the image and the `added` findings, adjust, and finish with 
   the canvas blockouts, the grey-box drawings and RE-Blend's blockout meshes.
 - `greybox` lists the placeholders the bench drew, with a hash of each file. A PNG is redrawn
   only while it still matches that hash, so a real render is never overwritten.
-- A missing sidecar is the same as an empty one, and existing projects need no change.
+- `derive_from` and `crop` mark a derived sheet (see the `derive` op).
+- `art` holds the screws and routing icons painted into panel art (see the `art` op).
+- A missing sidecar is the same as an empty one, and older versions read unchanged.
 
 ### Profiles: `rebench.profile.json` beside `GUI2D/`
 
 ```json
 {"ear_left_px": 160, "ear_right_px": 3610, "bypass_box_w": 400,
- "min_text_px": 43, "fold_arrow_full": [60, 35, 85, 85], "fold_arrow_folded": [60, 35, 85, 85]}
+ "min_text_px": 43, "fold_arrow_full": [60, 35, 85, 85], "fold_arrow_folded": [60, 35, 85, 85],
+ "rack_hole_front": [56, 56], "rack_hole_back": [60, 64], "rack_hole_folded_y": 75,
+ "screw_tolerance_px": 5}
 ```
 
-These override the house and observed numbers for one project (see `rebench/profile.py` for
-every field).
+These override the house and observed numbers for one project (see
+`reblend/project/profile.py` for every field). RE-Blend's Validate reads the same file.
 
-### The effect template (`rebench new`)
+### The templates (`rebench new --template effect|instrument`)
 
-The template is a 1U (or `--height` U) stereo `creative_fx` with:
+The effect template (the default) is a 1U (or `--height` U) stereo `creative_fx` with:
 
 - one Level knob;
 - the On/Off/Bypass fader top left on the front and folded front;
@@ -289,9 +318,16 @@ The template is a 1U (or `--height` U) stereo `creative_fx` with:
 It passes `rebench check` with zero findings. Before release you still need to do these:
 
 - set `device_categories` (it ships as `"Misc"`);
-- paint the routing icons on the back panel (section 7);
+- paint the routing icons on the back panel (section 7); the template's sidecar already
+  declares `Routing_Icon_01` and `_03` below the inputs, so keep the art where the marks are;
 - write the real DSP;
 - register the `product_id`.
+
+The instrument template (`--template instrument`) is an `instrument` that accepts notes: one
+Level knob, the tape on all four panels, two audio outputs and the placeholder, a stereo
+instrument routing hint, and a C++ monophonic sine voice (last note wins, short attack and
+release) that reads `/note_states` and honours `request_reset_audio`. It has no On/Off/Bypass
+control and no routing icons, which are for effects. It also passes with zero findings.
 
 ## 5. RE-Blend reference
 
@@ -324,6 +360,28 @@ from reblend.project import validation                  # validate_link(link, el
 from reblend.project.lua_writer import patch_device_2d  # anchored offset/frames edits
 from reblend.model import kinds                          # widget -> kind, frame-count rules
 ```
+
+Beyond that flow:
+
+- **Headless.** `blender -b scene.blend --python-expr "import reblend; reblend.cli()" --
+  render --dirty --project <root> [--validate] [--json] [--report r.json]`. Commands: `render`
+  (`--all`, `--dirty`, `--element N`, `--progress`), `validate`, `export-config --patch
+  [--dry-run]`, `status`. Exit 0 clean, 1 errors, 2 unusable. `GUI2D/reblend-manifest.json`
+  records a hash per sheet so `--dirty` renders only what changed.
+- **Background render** (Render panel): Changed / All / Active in a second Blender, with
+  progress and Cancel, so the open one stays usable.
+- **Render options:** shadow casters that keep their bounce light, panel isolation, an alpha
+  floor against shadow-catcher haze, per-element samples, full-bleed elements, the emission
+  pass (base sheet plus `Design/emission/<path>_emission.png` to add back in Linear Dodge),
+  and art variants (child collections switched as a group).
+- **Rig helpers:** Pointer at Rest (a knob pointer modelled off 12 o'clock), Centre Selected on
+  Element (measures hidden objects shown), Repair Channels, and a live overlap warning while a
+  registration empty is dragged.
+- **Palette & Materials:** Load Palette (`Design/palette.json` or any text file with
+  `#RRGGBB` lines) into an `RE Palette` node group; material starters (brushed and anodised
+  metal, dark glass, plastic cap, knurl); a touch-point mapping node for wear; Add Lighting Rig
+  and Save Rig as Template.
+- **Preview** at 0.5× shows roughly what the low-res set looks like.
 
 RE-Blend never writes `motherboard_def.lua`, `realtime_controller.lua`, `display.lua` or C++.
 It installs SDK-supplied art from your SDK (**Install SDK Parts**) rather than rendering it.
@@ -502,7 +560,9 @@ essentials:
   (60, 35, 85, 85) clear. (req that nothing overlaps it; position obs, see
   [`docs/findings-fold-arrow.md`](docs/findings-fold-arrow.md))
 - Rack ears: only ear art at x < 160 or x > 3610 on the front. (house, configurable) Screws
-  should line up with Reason's rack holes. (guide)
+  should line up with Reason's rack holes: y 56 / 634 on a 2U front, 60 / 626 on the back, 75
+  on folded panels (obs, configurable). Declare painted screws with the `art` op and the
+  `rack-screws` rule checks them; nodes with "screw" in the name are checked too.
 - Effects need the On/Off/Bypass control in the **top left** of the front *and* folded front.
   (req) The house rule reads "top left" as the control's centre within the leftmost 400 px.
 - The device name tape (`jbox.device_name`) appears on **all four** panels. (req)
@@ -512,8 +572,9 @@ essentials:
 - Sockets go on the back panel only. Custom displays go on the front and folded front only.
   (spec)
 - **Routing icons.** Effects show at least two `Routing_Icon_*` icons on the back panel: one for
-  mono input, one for stereo input, and every one that can apply. This is painted panel art; the
-  bench cannot check it yet. (req)
+  mono input, one for stereo input, and every one that can apply. They are usually painted into
+  the panel art, so declare them with the `art` op; the `routing-icons` rule then checks them
+  against the routing hint. (req)
 
 **Text.** Functional text should be at least **43 px** (hi-res), about 21 px in the 0.5× set.
 (guide) The rule is `text-size`, with the floor configurable. Decorative text need not be

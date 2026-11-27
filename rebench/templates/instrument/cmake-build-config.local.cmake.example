@@ -1,0 +1,6 @@
+# Copy to cmake-build-config.local.cmake (git-ignored) and set your paths.
+set(RE_SDK_ROOT       "C:/path/to/RE_SDK/SDK")
+set(RE_2D_RENDER_ROOT "C:/path/to/RE_SDK/RE2DRender")
+# set(RE_2D_PREVIEW_ROOT  "C:/path/to/RE_SDK/RE2DPreview")
+# set(RE_RECON_EXECUTABLE "C:/Program Files/Reason Studios/Recon 12/Recon.exe")
+set(RE_SDK_VERSION "4.6.0")

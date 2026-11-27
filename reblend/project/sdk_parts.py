@@ -37,6 +37,8 @@ __all__ = [
     "stock_part_for_widget",
     "find_stock_image",
     "install_stock_part",
+    "check_stock_size",
+    "visible_centre_offset",
 ]
 
 
@@ -50,6 +52,12 @@ class StockPart:
     description: str
     #: Alternative basenames seen across SDK versions and example devices.
     aliases: tuple[str, ...] = ()
+    #: Size of the whole hi-res strip as RE2DRender and the SDK examples ship
+    #: it (width, height), or None when unknown. A copy of another size is
+    #: the wrong file (Skou feedback #25: a 3 KB low-res tape).
+    size: tuple[int, int] | None = None
+    #: Frames in the strip (the sockets are 3-frame strips, #9).
+    frames: int = 1
 
     @property
     def candidates(self) -> tuple[str, ...]:
@@ -61,36 +69,47 @@ class StockPart:
 #: specification; the ``.sg`` names given there are the 3D-pipeline
 #: scenegraphs, and the 2D pipeline ships same-named PNGs.
 STOCK_PARTS: dict[str, StockPart] = {
+    # Canonical names first: the files RE2DRender ships in RE2DRender/Images
+    # and every SDK example's GUI2D/ uses. Sizes are the hi-res strips
+    # (measured from the SDK 4.6.0 examples, which carry RE2DRender's files).
     "audio_input_socket": StockPart(
-        "Cable_Attachment_Audio",
-        "audio socket",
-        aliases=("SharedAudioJack", "Socket_Audio", "AudioJack"),
+        "SharedAudioJack", "audio socket",
+        aliases=("Cable_Attachment_Audio", "Socket_Audio", "AudioJack"),
+        size=(95, 315), frames=3,
     ),
     "audio_output_socket": StockPart(
-        "Cable_Attachment_Audio",
-        "audio socket",
-        aliases=("SharedAudioJack", "Socket_Audio", "AudioJack"),
+        "SharedAudioJack", "audio socket",
+        aliases=("Cable_Attachment_Audio", "Socket_Audio", "AudioJack"),
+        size=(95, 315), frames=3,
     ),
     "cv_input_socket": StockPart(
-        "CV_Attachment_Audio",
-        "CV socket",
-        aliases=("SharedCVJack", "Socket_CV", "CVJack"),
+        "SharedCVJack", "CV socket",
+        aliases=("CV_Attachment_Audio", "Socket_CV", "CVJack"),
+        size=(75, 255), frames=3,
     ),
     "cv_output_socket": StockPart(
-        "CV_Attachment_Audio",
-        "CV socket",
-        aliases=("SharedCVJack", "Socket_CV", "CVJack"),
+        "SharedCVJack", "CV socket",
+        aliases=("CV_Attachment_Audio", "Socket_CV", "CVJack"),
+        size=(75, 255), frames=3,
     ),
-    "cv_trim_knob": StockPart("Trim_Knob", "CV trim knob"),
+    "cv_trim_knob": StockPart("TrimKnob", "CV trim knob", aliases=("Trim_Knob",),
+                              size=(100, 100)),
     "device_name": StockPart(
-        "Tape_Horizontal",
-        "device-name tape",
-        aliases=("Tape_Vertical",),
+        "TapeHorz", "device-name tape",
+        aliases=("Tape_Horizontal",),
+        size=(400, 65),
     ),
-    "placeholder": StockPart("Placeholder", "back-panel placeholder"),
-    "patch_browse_group": StockPart("Patch_Browse_Group", "patch browse group"),
-    "sample_browse_group": StockPart("Sample_Browse_Group", "sample browse group"),
+    "placeholder": StockPart("Placeholder", "back-panel placeholder", size=(300, 100)),
+    "patch_browse_group": StockPart("PatchBrowseGroup", "patch browse group",
+                                    aliases=("Patch_Browse_Group",), size=(290, 110)),
+    "sample_browse_group": StockPart("SampleBrowseGroup", "sample browse group",
+                                     aliases=("Sample_Browse_Group",), size=(295, 110)),
 }
+
+#: The vertical tape for a device_name on a rack ear (``TapeVert``).
+VERTICAL_TAPE = StockPart("TapeVert", "device-name tape (vertical)",
+                          aliases=("Tape_Vertical",), size=(65, 400))
+
 
 #: Directories under an SDK root to check first, in order of preference.
 SEARCH_DIRS = (
@@ -156,6 +175,10 @@ def install_stock_part(
     the caller turns that into a message naming the SDK path to fix.
     """
     source = find_stock_image(part, sdk_root)
+    if source is not None and check_stock_size(part, source) is not None:
+        # A wrong-size copy (an example's low-res file) under a canonical
+        # name: look for a right-size one before giving up on it.
+        source = _right_size_copy(part, sdk_root) or source
     if source is None:
         raise FileNotFoundError(
             f"no stock image for the {part.description} "
@@ -165,3 +188,52 @@ def install_stock_part(
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     return destination
+
+
+def check_stock_size(part: StockPart, path: Path | str) -> str | None:
+    """Why ``path`` is not the hi-res stock image, or None when its size fits."""
+    if part.size is None:
+        return None
+    from .png_meta import PngError, read_png_meta
+
+    try:
+        meta = read_png_meta(path)
+    except (PngError, OSError) as exc:
+        return f"cannot read {path}: {exc}"
+    if (meta.width, meta.height) != part.size:
+        return (f"{Path(path).name} is {meta.width}x{meta.height}; the SDK's hi-res "
+                f"{part.description} is {part.size[0]}x{part.size[1]} — this is probably a "
+                "low-res or edited copy (use RE2DRender/Images)")
+    return None
+
+
+def _right_size_copy(part: StockPart, sdk_root: Path | str) -> Path | None:
+    root = Path(sdk_root)
+    for name in part.candidates:
+        for found in sorted(root.rglob(f"{name}.png"), key=lambda p: len(p.parts)):
+            if len(found.relative_to(root).parts) <= MAX_SEARCH_DEPTH \
+                    and check_stock_size(part, found) is None:
+                return found
+    return None
+
+
+def visible_centre_offset(alpha, frame_h: int | None = None) -> tuple[float, float]:
+    """How far the visible art's centre sits from the frame centre, in px
+    (x right, y down), from an ``(H, W)`` alpha array of the first frame
+    (Skou feedback #28: SharedAudioJack's nut sits about 6 px left of centre).
+
+    Subtract it from a node offset to centre what the eye sees rather than
+    the frame. Pure numpy; ``frame_h`` crops a strip to its first frame.
+    """
+    import numpy as np
+
+    a = np.asarray(alpha, dtype=np.float32)
+    if frame_h:
+        a = a[:frame_h]
+    total = float(a.sum())
+    if total <= 0.0:
+        return 0.0, 0.0
+    ys, xs = np.indices(a.shape)
+    cx = float((xs * a).sum()) / total + 0.5
+    cy = float((ys * a).sum()) / total + 0.5
+    return cx - a.shape[1] / 2.0, cy - a.shape[0] / 2.0

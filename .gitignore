@@ -28,3 +28,6 @@ __pycache__/
 !/SDK_v4.6.0/Licenses/
 /SDK_v4.6.0/Licenses/*
 !/SDK_v4.6.0/Licenses/RE SDK License Agreement.txt
+
+# Packaging cache (tools/package.py)
+/build/

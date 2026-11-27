@@ -204,3 +204,10 @@ def test_panels_deduplicate_in_order():
         ),
     )
     assert data.panels == ("front", "back")
+
+
+def test_migrate_v5_adds_zero_angle():
+    props = {"re_schema": 5}
+    schema.migrate(props)
+    assert props["re_zero_deg"] == 0.0
+    assert props["re_schema"] == schema.SCHEMA_VERSION

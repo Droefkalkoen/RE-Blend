@@ -48,7 +48,15 @@ _OPS = {
         '{"op":"add_control","panel":"front","node":"knob_drive","widget":"analog_knob",'
         '"x":900,"y":110,"title":"Drive"} (widget: analog_knob, toggle_button, '
         'momentary_button, sequence_fader with "steps"; writes the node, widget, '
-        'property stub and its English name)'
+        'property stub and its English name); '
+        '{"op":"remove_control","panel":"front","node":"knob_drive","drop_property":false}; '
+        '{"op":"derive","sprite":"fader_folded","from":"fader","crop":[0,60,60,120]}; '
+        '{"op":"underive","sprite":"fader_folded"}; '
+        '{"op":"centre","panel":"back","node":"socket_in_left","x":653,"y":405,"visible":true} '
+        '(visible: centre the art the eye sees, not the frame); '
+        '{"op":"art","panel":"back","kind":"routing_icon","name":"Routing_Icon_03","x":800,"y":560} '
+        '(kind screw or routing_icon: marks painted into the panel art); '
+        '{"op":"remove_art","panel":"back","kind":"routing_icon","name":"Routing_Icon_03"}'
     ),
 }
 _PANEL = {"type": "string", "enum": list(agent.PANELS)}
@@ -105,13 +113,16 @@ TOOLS = [
     },
     {
         "name": "project_new",
-        "description": "Create a new device from the effect template (stereo creative_fx, one "
-                       "Level knob, bypass fader, jacks, re-cmake build, gain-stage C++) with "
-                       "grey-box art. target must not exist or be empty.",
+        "description": "Create a new device from a template with grey-box art: 'effect' "
+                       "(stereo creative_fx, one Level knob, bypass fader, jacks, re-cmake "
+                       "build, gain-stage C++) or 'instrument' (note-playing sine voice, "
+                       "Level knob, outputs). target must not exist or be empty.",
         "inputSchema": {"type": "object", "properties": {
             "target": {"type": "string"}, "name": {"type": "string"},
             "manufacturer": {"type": "string"}, "height_ru": {"type": "integer", "default": 1},
             "product_id": {"type": "string"}, "sdk": {"type": "string"},
+            "template": {"type": "string", "enum": ["effect", "instrument"],
+                         "default": "effect"},
         }, "required": ["target", "name", "manufacturer"]},
     },
 ]
@@ -126,7 +137,7 @@ def _call(name: str, args: dict, default_root: str | None) -> dict:
         return {"content": [_text(agent.project_new(
             args["target"], args["name"], args["manufacturer"],
             height_ru=int(args.get("height_ru", 1)), product_id=args.get("product_id", ""),
-            sdk_root=args.get("sdk")))]}
+            template=args.get("template", "effect"), sdk_root=args.get("sdk")))]}
     root = args.get("project") or default_root
     if not root:
         raise ValueError("no project: pass 'project' or start the server with --project")

@@ -63,6 +63,14 @@ class ElementSpec:
     placements: tuple[schema.Placement, ...] = ()
     widget_kinds: tuple[str, ...] = ()
     shape: dict = field(default_factory=dict)
+    #: A widget on this sheet drives the device's On/Off/Bypass switch, so
+    #: its frames mean Off, On, Bypass (state names follow).
+    onoffbypass: bool = False
+    #: A derived sheet (sidecar ``derive_from``): cut from this other sprite's
+    #: frames by the renderer, so no scene element produces it directly.
+    derived_from: str = ""
+    #: ``(x, y, w, h)`` crop in the source's frame px, for a derived sheet.
+    crop: tuple[int, int, int, int] | None = None
 
     @property
     def node(self) -> str:
@@ -100,12 +108,25 @@ class ProjectLink:
     #: property path -> steps, from motherboard_def.lua (best effort; empty
     #: when the file is absent or unreadable — validation degrades gracefully).
     property_steps: dict[str, int] = field(default_factory=dict)
+    #: ``GUI2D/rebench.json`` (empty when the project has none).
+    sidecar: Sidecar = field(default_factory=Sidecar)
 
     def spec(self, path: str) -> ElementSpec | None:
         for candidate in self.specs:
             if candidate.path == path:
                 return candidate
         return None
+
+    @property
+    def scene_specs(self) -> list[ElementSpec]:
+        """The specs a Blender scene builds elements for: derived sheets are
+        written by the renderer from their source, not modelled."""
+        return [spec for spec in self.specs if not spec.derived_from]
+
+    @property
+    def derived(self) -> dict[str, ElementSpec]:
+        """Derived sheets by sprite path."""
+        return {spec.path: spec for spec in self.specs if spec.derived_from}
 
 
 def load_project(root: Path | str) -> ProjectLink:
@@ -116,7 +137,8 @@ def load_project(root: Path | str) -> ProjectLink:
     hdgui = read_hdgui_2d(gui2d / "hdgui_2D.lua")
 
     specs = derive_specs(device, hdgui)
-    size_specs(specs, gui2d, Sidecar.load(root))
+    sidecar = Sidecar.load(root)
+    size_specs(specs, gui2d, sidecar)
 
     property_steps: dict[str, int] = {}
     motherboard = root / MOTHERBOARD_FILENAME
@@ -133,6 +155,7 @@ def load_project(root: Path | str) -> ProjectLink:
         hdgui=hdgui,
         specs=specs,
         property_steps=property_steps,
+        sidecar=sidecar,
     )
 
 
@@ -190,6 +213,9 @@ def _walk(
             spec.widget_kinds = spec.widget_kinds + tuple(
                 w for w, _ in widgets if w not in spec.widget_kinds
             )
+            if any(str(attrs.get("value", "")).endswith("/builtin_onoffbypass")
+                   for _w, attrs in widgets):
+                spec.onoffbypass = True
 
     for child_name in sorted(node.children):
         _walk(by_path, hdgui, backdrop_nodes, panel, node.children[child_name], x, y)
@@ -205,6 +231,18 @@ def size_specs(specs: list[ElementSpec], gui2d_dir: Path, sidecar: Sidecar) -> N
             _probe_frame_size(spec, gui2d_dir)
         if info and info.shape:
             spec.shape = dict(info.shape)
+    by_path = {spec.path: spec for spec in specs}
+    for spec in specs:
+        info = sidecar.sprites.get(spec.path)
+        if not info or not info.derive_from:
+            continue
+        spec.derived_from = info.derive_from
+        source = by_path.get(info.derive_from)
+        source_info = sidecar.sprites.get(info.derive_from)
+        sw = source.frame_w if source else (source_info.frame_w if source_info else 0)
+        sh = source.frame_h if source else (source_info.frame_h if source_info else 0)
+        spec.crop = info.derived_rect(sw, sh)
+        spec.frame_w, spec.frame_h = spec.crop[2], spec.crop[3]
 
 
 def _probe_frame_size(spec: ElementSpec, gui2d_dir: Path) -> None:

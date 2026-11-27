@@ -19,10 +19,18 @@ from reblend.model.state_tables import (
 def test_default_tables_use_conventional_names():
     lamp = default_state_table(kinds.LAMP, 2)
     assert [s.name for s in lamp.states] == ["unlit", "lit"]
-    fader = default_state_table(kinds.FADER_HANDLE, 3)
+    fader = default_state_table(kinds.FADER_HANDLE, 3, onoffbypass=True)
     assert [s.name for s in fader.states] == ["off", "on", "bypass"]
+    radio = default_state_table(kinds.BUTTON_RADIO, 2)
+    assert [s.name for s in radio.states] == ["off", "on"]
     toggle = default_state_table(kinds.BUTTON_TOGGLE, 2)
     assert [s.name for s in toggle.states] == ["off", "on"]
+
+
+def test_three_way_selector_is_not_seeded_as_bypass():
+    """Skou feedback #11: only the On/Off/Bypass fader gets off/on/bypass."""
+    fader = default_state_table(kinds.FADER_HANDLE, 3)
+    assert [s.name for s in fader.states] == ["state_0", "state_1", "state_2"]
 
 
 def test_default_table_falls_back_to_indexed_names():

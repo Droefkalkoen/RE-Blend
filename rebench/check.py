@@ -9,7 +9,6 @@ from reblend.project.link import ProjectLink
 from reblend.project.validation import validate_link
 
 from .catalogue import rule_for
-from .layout import check_labels, check_layout
 from .profile import Profile, load_profile
 from .project import BenchProject
 
@@ -68,12 +67,11 @@ def check_project(project: BenchProject, profile: Profile | None = None) -> Chec
     link = project.link
 
     findings: list[BenchFinding] = []
-    report = validate_link(link, [spec.to_element_data() for spec in link.specs])
+    report = validate_link(link, [spec.to_element_data() for spec in link.specs],
+                           rules=True, profile=profile)
     for f in report.findings:
         if rule_for(f.code).scene_only:
             continue
-        findings.append(_tag(f.severity, f.code, f.message, f.subject, f.panel))
-    for f in check_layout(link, profile) + check_labels(project.sidecar, profile):
         findings.append(_tag(f.severity, f.code, f.message, f.subject, f.panel))
 
     order = {"error": 0, "warning": 1}

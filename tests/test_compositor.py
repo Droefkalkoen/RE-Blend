@@ -149,3 +149,16 @@ def test_module_exports():
     assert set(compositor.__all__) == {
         "CompositeLayer", "alpha_over", "composite_panel", "contact_sheet"
     }
+
+
+def test_half_size_box_filters_in_premultiplied_space():
+    import numpy as np
+
+    from reblend.render.compositor import half_size
+
+    canvas = np.zeros((4, 5, 4), dtype=np.float32)
+    canvas[0, 0] = (1.0, 0.0, 0.0, 1.0)   # one red pixel in the first 2x2 block
+    small = half_size(canvas)
+    assert small.shape == (2, 2, 4)
+    assert small[0, 0].tolist() == pytest.approx([1.0, 0.0, 0.0, 0.25])
+    assert small[1, 1].tolist() == [0.0, 0.0, 0.0, 0.0]

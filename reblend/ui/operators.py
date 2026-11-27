@@ -23,10 +23,11 @@ from mathutils import Vector
 from .. import __version__
 from ..model import blockout, calibration, kinds, rigs, schema, state_tables
 from ..project import lua_writer, merge, reporting, sdk_parts, validation
+from ..project.profile import load_profile as load_house_profile
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
 from ..project.lua_writer import PatchError
-from ..render import bpy_io, compositor, renderer, shadows, stitcher
+from ..render import bpy_io, compositor, fingerprint, renderer, shadows, stitcher
 from . import props
 
 #: Root collection name per panel (§4.2).
@@ -148,8 +149,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
     # must exist afterwards or the migration that would add it never runs.
     keep = set()
     if not is_new:
-        keep = {"re_sweep_deg", "re_rotor", "re_states", "re_registration",
-                "re_preview_frame", "re_shadow_owner"}
+        keep = {"re_sweep_deg", "re_zero_deg", "re_rotor", "re_states", "re_registration",
+                "re_preview_frame", "re_shadow_owner", "re_full_bleed", "re_samples"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
     old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
@@ -167,7 +168,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
             _shift_for_resize(collection, settings, old_w, old_h, new_w, new_h)
             _refresh_guide_boxes(collection, settings)
     if is_new:
-        table = state_tables.default_state_table(spec.kind, spec.frames)
+        table = state_tables.default_state_table(spec.kind, spec.frames,
+                                                 onoffbypass=spec.onoffbypass)
         collection["re_states"] = table.to_json() if table else ""
     # Frames may have changed (a sync accept), so re-clamp the preview slider.
     _configure_preview_ui(collection)
@@ -481,6 +483,22 @@ def set_active_sweep_deg(context, value: float) -> None:
     collection["re_sweep_deg"] = min(max(float(value), 1.0), 360.0)
 
 
+def active_zero_deg(context) -> float:
+    """The active knob's pointer rest angle (``re_zero_deg``)."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return 0.0
+    return float(collection.get("re_zero_deg", 0.0))
+
+
+def set_active_zero_deg(context, value: float) -> None:
+    """Setter behind the Rig panel's Pointer at Rest field."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    collection["re_zero_deg"] = min(max(float(value), -180.0), 180.0)
+
+
 def set_active_frame_size(context, w: int | None = None,
                           h: int | None = None) -> None:
     """Setter behind the panel's Frame W/H proxies (§5.2).
@@ -708,7 +726,7 @@ class REBLEND_OT_import_project(bpy.types.Operator):
                     f"{element.path}  moved to {drifted.x:.0f}, {drifted.y:.0f} "
                     f"(Lua: {stored.x:.0f}, {stored.y:.0f})"
                 )
-        for item in merge.diff_link(link.specs, elements):
+        for item in merge.diff_link(link.scene_specs, elements):
             if item.status != merge.CHANGED:
                 continue
             for change in item.changes:
@@ -730,7 +748,7 @@ class REBLEND_OT_import_project(bpy.types.Operator):
 
         settings = _settings(context)
         created = updated = 0
-        for spec in link.specs:
+        for spec in link.scene_specs:
             was_new = _materialise(context, spec, settings, self.reposition)
             created += was_new
             updated += not was_new
@@ -767,7 +785,13 @@ class REBLEND_OT_validate(bpy.types.Operator):
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
-        report = validation.validate_link(link, elements, scene_info)
+        try:
+            profile = load_house_profile(link.root)
+        except (ValueError, OSError) as exc:
+            self.report({"WARNING"}, f"house profile ignored: {exc}")
+            profile = None
+        report = validation.validate_link(link, elements, scene_info, rules=True,
+                                             profile=profile)
         props.store_validation_report(_settings(context), report.findings)
 
         if report.ok and not report.warnings:
@@ -946,15 +970,8 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
             self.report({"ERROR"}, "no RE Elements in the scene — import the project first")
             return {"CANCELLED"}
 
-        settings = _settings(context)
-        results = renderer.render_elements(
-            context.scene, collections, out_dir, ppb=settings.ppb,
-            inactive_render=settings.inactive_render,
-            view_axis=calibration.axis_vector(settings.camera_axis),
-        )
+        results = run_render(context, collections, root)
         findings = [f for result in results for f in result.findings]
-        props.store_render_report(settings, findings)
-
         failed = [r.element for r in results if not r.ok]
         warnings = sum(1 for f in findings if f.severity != validation.ERROR)
         if failed:
@@ -972,6 +989,189 @@ class REBLEND_OT_render_elements(bpy.types.Operator):
         else:
             self.report({"INFO"}, f"rendered {len(results)} sheet(s) into {out_dir}")
         return {"FINISHED"}
+
+
+def render_options(context, root: Path) -> renderer.RenderOptions:
+    """The scene's render settings plus the project's derived sheets."""
+    settings = _settings(context)
+    derived: dict[str, list] = {}
+    try:
+        link = load_project(root)
+    except LuaConfigError:
+        link = None
+    if link is not None:
+        for path, spec in link.derived.items():
+            if spec.crop:
+                derived.setdefault(spec.derived_from, []).append((path, spec.crop))
+    return renderer.RenderOptions(
+        caster_bounce=settings.caster_bounce,
+        panel_isolation=settings.panel_isolation,
+        alpha_floor=settings.alpha_floor,
+        derived=derived,
+    )
+
+
+def _record_manifest(context, root: Path, collections, results, prints) -> None:
+    """Write each successfully rendered sheet into the render manifest."""
+    from .. import __version__ as version
+
+    gui2d = root / "GUI2D"
+    manifest = fingerprint.Manifest.load(gui2d)
+    manifest.reblend = version
+    manifest.blend = Path(bpy.data.filepath).name if bpy.data.filepath else ""
+    by_name = {c.name: c for c in collections}
+    stamp = props._timestamp()
+    for result in results:
+        if not result.ok or result.strip_path is None:
+            continue
+        collection = by_name.get(result.element) or next(
+            (c for c in collections if str(c.get("re_path", "")) == result.element), None)
+        if collection is None:
+            continue
+        data = schema.props_to_data(collection)
+        manifest.record(data.path, fingerprint.SheetRecord(
+            element=collection.name,
+            fingerprint=prints.get(collection.name, ""),
+            sha256=fingerprint.file_sha256(result.strip_path),
+            frames=data.frames, frame_w=data.frame_w, frame_h=data.frame_h,
+            rendered=stamp,
+            derived={p.stem: fingerprint.file_sha256(p) for p in result.derived_paths},
+        ))
+    manifest.save(gui2d)
+
+
+def _object_names(collections) -> set[str]:
+    names: set[str] = set()
+    for c in collections:
+        names.update(o.name for o in c.all_objects)
+    return names
+
+
+def _neighbours_in_frame(context, collection, others) -> list:
+    """Other elements' objects that can shadow ``collection``: those whose
+    bounds reach into its frame, widened by one frame on every side. Only
+    matters in Cast Shadows isolation; elsewhere neighbours are invisible."""
+    settings = _settings(context)
+    if settings.inactive_render != "SHADOW":
+        return []
+    data = schema.props_to_data(collection)
+    if not data.has_frame_size:
+        return []
+    empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+    if empty is None:
+        return []
+    axis, u, v = _camera_basis(collection, settings)
+    centre = empty.matrix_world.translation
+    half_u = 1.5 * data.frame_w / settings.ppb
+    half_v = 1.5 * data.frame_h / settings.ppb
+    panels = set(data.panels)
+    found = []
+    for other in others:
+        if other is collection:
+            continue
+        if settings.panel_isolation and panels and schema.is_element(other):
+            try:
+                if not set(schema.props_to_data(other).panels) & panels:
+                    continue
+            except (KeyError, ValueError):
+                pass
+        for obj in other.all_objects:
+            if obj.type not in _GEOMETRY_TYPES or "re_guide" in obj:
+                continue
+            corners = [obj.matrix_world @ Vector(c) - centre for c in obj.bound_box]
+            us = [c.dot(u) for c in corners]
+            vs = [c.dot(v) for c in corners]
+            if max(us) >= -half_u and min(us) <= half_u and max(vs) >= -half_v \
+                    and min(vs) <= half_v:
+                found.append(obj)
+    return found
+
+
+def element_fingerprints(context, collections) -> dict[str, str]:
+    """Input hash per element collection name (see render/fingerprint.py)."""
+    context.view_layer.update()  # matrix_world must reflect edits made by script
+    everything = _element_collections(context.scene)
+    contexts = [c for c in bpy.data.collections if c.name.endswith(" context")]
+    owned = _object_names(everything + contexts)
+    settings = _settings(context)
+    return {
+        c.name: fingerprint.element_fingerprint(
+            context.scene, c, settings, element_objects=owned,
+            neighbour_objects=_neighbours_in_frame(context, c, everything))
+        for c in collections
+    }
+
+
+def dirty_elements(context, root: Path, collections=None) -> list[tuple]:
+    """``[(collection, reason)]`` for the elements whose sheets are stale.
+
+    Elements RE-Blend does not render (SDK parts, text boxes) are never dirty.
+    """
+    collections = collections if collections is not None else _element_collections(context.scene)
+    renderable = []
+    for c in collections:
+        try:
+            data = schema.props_to_data(c)
+        except (KeyError, ValueError):
+            continue
+        if kinds.renders_art(data.kind):
+            renderable.append((c, data))
+    prints = element_fingerprints(context, [c for c, _d in renderable])
+    manifest = fingerprint.Manifest.load(root / "GUI2D")
+    out = []
+    for c, data in renderable:
+        reason = fingerprint.is_dirty(manifest, data.path, prints[c.name], root / "GUI2D")
+        if reason is not None:
+            out.append((c, reason))
+    return out
+
+
+def run_render(context, collections, root: Path, progress=None, cancelled=None):
+    """Render ``collections`` with the scene's settings and record the
+    outcome on the scene: findings, ``render_state``, progress and finish
+    time (Skou feedback #23), so a script can tell a finished render from
+    one that stopped half way. Used by the operator and the headless CLI."""
+    settings = _settings(context)
+    settings.render_state = "RUNNING"
+    settings.render_progress = 0.0
+    settings.render_message = ""
+    # Inputs are hashed before rendering: the render itself changes nothing
+    # in the scene, and the manifest must describe what the pixels came from.
+    prints = element_fingerprints(context, collections)
+
+    def report_progress(done, total, name):
+        settings.render_progress = 100.0 * done / total if total else 100.0
+        settings.render_message = f"{done}/{total} {name}".strip()
+        if progress is not None:
+            progress(done, total, name)
+
+    try:
+        results = renderer.render_elements(
+            context.scene, collections, root / "GUI2D", ppb=settings.ppb,
+            inactive_render=settings.inactive_render,
+            view_axis=calibration.axis_vector(settings.camera_axis),
+            options=render_options(context, root),
+            progress=report_progress, cancelled=cancelled,
+        )
+    except BaseException as exc:
+        settings.render_state = "FAILED"
+        settings.render_message = f"render stopped: {exc}"
+        settings.render_finished = props._timestamp()
+        raise
+    findings = [f for result in results for f in result.findings]
+    props.store_render_report(settings, findings)
+    _record_manifest(context, root, collections, results, prints)
+    if len(results) < len(collections):
+        settings.render_state = "CANCELLED"
+        settings.render_message = f"cancelled after {len(results)}/{len(collections)}"
+    elif any(not r.ok for r in results):
+        settings.render_state = "FAILED"
+        settings.render_message = ", ".join(r.element for r in results if not r.ok)
+    else:
+        settings.render_state = "DONE"
+        settings.render_message = f"{len(results)} sheet(s)"
+    settings.render_finished = props._timestamp()
+    return results
 
 
 class REBLEND_OT_generate_rig(bpy.types.Operator):
@@ -1009,6 +1209,7 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                     sweep_deg=float(collection.get("re_sweep_deg",
                                                    calibration.DEFAULT_SWEEP_DEG)),
                     axis=axis,
+                    zero_deg=float(collection.get("re_zero_deg", 0.0)),
                 )
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
@@ -1018,6 +1219,7 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
             collection["re_rotor"] = rotor.name
             self.report({"INFO"}, f"turntable driver on '{rotor.name}': "
                                   f"{data.frames} frames")
+            revalidate_quietly(context)
             return {"FINISHED"}
 
         if rig == kinds.RIG_STATES:
@@ -1039,6 +1241,7 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                         "actions in the State Table first",
                     )
                     return {"CANCELLED"}
+                split = rigs.split_actions(table)
                 stale = rigs.apply_state_table(table)
             except (ValueError, KeyError) as exc:
                 self.report({"ERROR"}, str(exc))
@@ -1053,6 +1256,12 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                 pruned = f", pruned {stale} stale key(s)" if stale else ""
                 self.report({"INFO"}, f"keyed {len(keys)} state action(s) over "
                                       f"{table.frames} frames{pruned}")
+            revalidate_quietly(context)
+            if split:
+                self.report({"WARNING"},
+                            "gave " + ", ".join(split) + " its own action: it "
+                            "shared one with another element (a copy), whose "
+                            "keys are left as they were")
             return {"FINISHED"}
 
         self.report({"INFO"}, f"'{data.kind}' elements need no rig")
@@ -1155,6 +1364,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
             summary += f", skipped {skipped}"
         self.report({"WARNING"} if problems else {"INFO"},
                     summary + (" — " + "; ".join(problems[:3]) if problems else ""))
+        revalidate_quietly(context)
         return {"FINISHED"}
 
     def _redrive_knob(self, context, collection, data) -> bool:
@@ -1175,6 +1385,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
             sweep_deg=float(collection.get("re_sweep_deg",
                                            calibration.DEFAULT_SWEEP_DEG)),
             axis=_knob_axis(context, collection),
+            zero_deg=float(collection.get("re_zero_deg", 0.0)),
         )
         collection["re_rotor"] = rotor.name
         return True
@@ -1190,6 +1401,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
             raise ValueError(
                 f"state table has {table.frames} states but re_frames = {data.frames}"
             )
+        rigs.split_actions(table)
         return rigs.apply_state_table(table), True
 
 
@@ -1932,6 +2144,15 @@ class REBLEND_OT_repair_state_channels(bpy.types.Operator):
 
         if repaired:
             collection["re_states"] = table.to_json()
+        # Drivers Blender gave up on (a copied material, a retargeted
+        # variable) are re-enabled here too (Skou feedback #6).
+        blocks = rigs.blocks_of(table) + list(collection.all_objects)
+        for obj in collection.all_objects:
+            blocks += [slot.material for slot in obj.material_slots if slot.material]
+        drivers = rigs.revalidate_drivers(blocks)
+        if drivers:
+            repaired.append(f"re-enabled {len(drivers)} driver(s): "
+                            + ", ".join(drivers))
         if unfixable:
             self.report({"WARNING"}, "; ".join(unfixable))
         elif repaired:
@@ -2204,8 +2425,10 @@ def _camera_basis(collection, settings) -> tuple[Vector, Vector, Vector]:
     if empty is not None:
         axis = empty.matrix_world.to_quaternion() @ axis
     axis = axis.normalized()
-    u = axis.orthogonal().normalized()
-    return axis, u, axis.cross(u).normalized()
+    # The same orientation renderer._make_camera gives the camera, so u is
+    # the sheet's right and v its up (the fader-direction check needs both).
+    quat = axis.to_track_quat("Z", "Y")
+    return axis, quat @ Vector((1.0, 0.0, 0.0)), quat @ Vector((0.0, 1.0, 0.0))
 
 
 def _visible_at_frame(obj) -> bool:
@@ -2222,6 +2445,93 @@ def _visible_at_frame(obj) -> bool:
     in that frame, so leaving its sample out loses no shadow information.
     """
     return obj.visible_get()
+
+
+def world_bounds_unhidden(context, objects) -> dict[str, list[Vector]]:
+    """World-space bounding-box corners per object, read with every hidden
+    object briefly shown (Skou feedback #35).
+
+    The depsgraph does not evaluate a hidden object, so a text object hidden
+    by a state table keeps the bounds it had before its body or size changed;
+    centring it on those put an unlit legend off-panel. Shows the hidden ones,
+    updates once, reads the evaluated bounds, then restores every flag.
+    """
+    objects = list(objects)
+    hidden = [o for o in objects if not o.visible_get()]
+    saved = [(o, o.hide_viewport, o.hide_get()) for o in hidden]
+    try:
+        for obj in hidden:
+            obj.hide_viewport = False
+            obj.hide_set(False)
+        context.view_layer.update()
+        depsgraph = context.evaluated_depsgraph_get()
+        out = {}
+        for obj in objects:
+            ev = obj.evaluated_get(depsgraph)
+            out[obj.name] = [ev.matrix_world @ Vector(c) for c in ev.bound_box]
+        return out
+    finally:
+        for obj, hide_viewport, hide in saved:
+            obj.hide_viewport = hide_viewport
+            obj.hide_set(hide)
+        if saved:
+            context.view_layer.update()
+
+
+class REBLEND_OT_centre_selected(bpy.types.Operator):
+    """Centre the selected objects on the active element's registration point.
+
+    Moves them together, in the sheet's plane only (depth is kept), so their
+    combined bounds centre on the registration empty. Hidden objects (a
+    state's unlit legend) are measured shown, so their bounds are current.
+    """
+
+    bl_idname = "reblend.centre_selected"
+    bl_label = "Centre Selected on Element"
+    bl_options = {"REGISTER", "UNDO"}
+
+    axis: bpy.props.EnumProperty(  # type: ignore[valid-type]
+        name="Axis",
+        items=(("BOTH", "Both", "Centre horizontally and vertically"),
+               ("U", "Horizontal", "Centre horizontally only"),
+               ("V", "Vertical", "Centre vertically only")),
+        default="BOTH",
+    )
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+        if empty is None:
+            self.report({"ERROR"}, "the element has no registration empty")
+            return {"CANCELLED"}
+        objects = [o for o in context.selected_objects
+                   if o is not empty and o.type in _GEOMETRY_TYPES]
+        if not objects:
+            self.report({"ERROR"}, "select the objects to centre")
+            return {"CANCELLED"}
+        _axis, u, v = _camera_basis(collection, _settings(context))
+        corners = [c for cs in world_bounds_unhidden(context, objects).values() for c in cs]
+        target = empty.matrix_world.translation
+        du = dv = 0.0
+        if self.axis in ("BOTH", "U"):
+            us = [c.dot(u) for c in corners]
+            du = target.dot(u) - (min(us) + max(us)) / 2.0
+        if self.axis in ("BOTH", "V"):
+            vs = [c.dot(v) for c in corners]
+            dv = target.dot(v) - (min(vs) + max(vs)) / 2.0
+        shift = u * du + v * dv
+        moved = {o for o in objects}
+        for obj in objects:
+            if obj.parent in moved:
+                continue  # moves with its parent
+            obj.matrix_world.translation += shift
+        self.report({"INFO"}, f"centred {len(objects)} object(s) "
+                              f"({du * _settings(context).ppb:+.1f}, "
+                              f"{dv * _settings(context).ppb:+.1f} px)")
+        return {"FINISHED"}
 
 
 def _world_bbox_centre(obj) -> Vector:
@@ -2385,7 +2695,7 @@ class REBLEND_OT_sync_project(bpy.types.Operator):
             return {"CANCELLED"}
 
         elements = _scene_elements(context)
-        items = merge.diff_link(link.specs, elements)
+        items = merge.diff_link(link.scene_specs, elements)
         props.store_merge_items(_settings(context), items)
 
         if not items:
@@ -2455,7 +2765,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
         except LuaConfigError:
             return []   # execute() will report the same failure properly
         current = {item.path: item
-                   for item in merge.diff_link(link.specs, _scene_elements(context))}
+                   for item in merge.diff_link(link.scene_specs, _scene_elements(context))}
         doomed = []
         for row in _settings(context).merge_items:
             item = current.get(row.path)
@@ -2472,8 +2782,15 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
+        bad = [f"{row.path}: '{row.resolution}'" for row in settings.merge_items
+               if row.resolution not in props.valid_resolutions(row.status)]
+        if bad:
+            self.report({"ERROR"}, "unknown choice for " + "; ".join(bad)
+                        + " (use THEIRS or MINE; DELETE for removed elements)")
+            return {"CANCELLED"}
+
         elements = _scene_elements(context)
-        items = {item.path: item for item in merge.diff_link(link.specs, elements)}
+        items = {item.path: item for item in merge.diff_link(link.scene_specs, elements)}
 
         accepted = kept = flagged = deleted = 0
         rig_stale: list[str] = []
@@ -2505,7 +2822,7 @@ class REBLEND_OT_apply_sync(bpy.types.Operator):
             accepted += 1
 
         elements = _scene_elements(context)
-        props.store_merge_items(settings, merge.diff_link(link.specs, elements))
+        props.store_merge_items(settings, merge.diff_link(link.scene_specs, elements))
 
         parts = [f"accepted {accepted} from Lua", f"kept {kept} scene value(s)"]
         if deleted:
@@ -2591,7 +2908,7 @@ class REBLEND_OT_purge_removed(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return None
         return [item.path
-                for item in merge.diff_link(link.specs, _scene_elements(context))
+                for item in merge.diff_link(link.scene_specs, _scene_elements(context))
                 if item.status == merge.REMOVED]
 
     def invoke(self, context, event):
@@ -2637,7 +2954,7 @@ class REBLEND_OT_purge_removed(bpy.types.Operator):
             try:
                 link = load_project(_project_root(context))
                 props.store_merge_items(
-                    settings, merge.diff_link(link.specs, _scene_elements(context)))
+                    settings, merge.diff_link(link.scene_specs, _scene_elements(context)))
             except LuaConfigError:
                 pass
         self.report({"INFO"}, f"deleted {deleted} removed element(s)")
@@ -2797,7 +3114,13 @@ def _show_image(context, name: str, pixels) -> "bpy.types.Image":
     result, and point an open Image Editor at it (best effort)."""
     height, width = pixels.shape[0], pixels.shape[1]
     image = bpy.data.images.get(name)
-    if image is not None and tuple(image.size) != (width, height):
+    # Recreate rather than refill an image that is no longer a plain
+    # in-memory buffer: once saved to disk it is file-backed, and depending
+    # on load state its pixel buffer can be empty (Skou feedback #2:
+    # "expected sequence size 0" on the second Preview Panel).
+    if image is not None and (tuple(image.size) != (width, height)
+                              or image.source != "GENERATED"
+                              or len(image.pixels) != width * height * 4):
         bpy.data.images.remove(image)
         image = None
     if image is None:
@@ -2911,6 +3234,8 @@ class REBLEND_OT_preview_panel(bpy.types.Operator):
 
         size = calibration.panel_size_px(panel, settings.rack_units)
         canvas = compositor.composite_panel(size.width, size.height, layers)
+        if settings.preview_half:
+            canvas = compositor.half_size(canvas)
         image = _show_image(context, f"RE Preview {panel}", canvas)
 
         message = f"composited {len(layers)} layer(s) into '{image.name}'"
@@ -3158,6 +3483,13 @@ class REBLEND_OT_install_sdk_parts(bpy.types.Operator):
                     self.report({"WARNING"}, str(exc))
                 else:
                     installed.append(sprite)
+                    problem = sdk_parts.check_stock_size(
+                        part, link.gui2d_dir / f"{sprite}.png")
+                    if problem and widget.kind == "device_name" and sdk_parts.check_stock_size(
+                            sdk_parts.VERTICAL_TAPE, link.gui2d_dir / f"{sprite}.png") is None:
+                        problem = None
+                    if problem:
+                        self.report({"WARNING"}, problem)
 
         if not installed and not skipped and not missing:
             self.report({"INFO"}, "no SDK-supplied parts in this project")
@@ -3331,3 +3663,525 @@ CLASSES = (
     REBLEND_OT_install_sdk_parts,
     REBLEND_OT_reference_images,
 )
+
+
+# ---------------------------------------------------------------------------
+# M3 — background rendering (Skou feedback #14/#39)
+# ---------------------------------------------------------------------------
+
+#: The one background render job of this Blender session, or None.
+_BG_JOB: "dict | None" = None
+
+
+def background_command(binary: str, blend: Path, root: Path, scope: str,
+                       report: Path, element: str = "") -> list[str]:
+    """The ``blender -b`` command line a background render runs."""
+    script = Path(__file__).resolve().parent.parent / "run_cli.py"
+    cmd = [binary, "-b", str(blend), "--python", str(script), "--",
+           "render", "--project", str(root), "--progress", "--report", str(report)]
+    if scope == "DIRTY":
+        cmd.append("--dirty")
+    elif scope == "ACTIVE" and element:
+        cmd += ["--element", element]
+    else:
+        cmd.append("--all")
+    return cmd
+
+
+def revalidate_quietly(context=None) -> bool:
+    """Re-run Validate when a report already exists, so a stored report never
+    describes a scene that has since changed (Skou feedback #7). True when
+    it ran. Never raises: a project that cannot be read keeps its old report,
+    which the panel then shows as stale."""
+    context = context or bpy.context
+    scene = getattr(context, "scene", None)
+    settings = getattr(scene, "reblend", None)
+    if settings is None or not settings.project_root or not len(settings.findings):
+        return False
+    try:
+        bpy.ops.reblend.validate("EXEC_DEFAULT")
+    except RuntimeError:
+        return False
+    return True
+
+
+def background_running() -> bool:
+    return _BG_JOB is not None
+
+
+class REBLEND_OT_render_background(bpy.types.Operator):
+    """Render sheets in a separate Blender process so this one stays usable.
+
+    Saves a copy of the file to a temporary folder, runs ``blender -b`` on it
+    with RE-Blend's headless render, and shows progress here; Cancel (or Esc
+    over the 3D view) stops it between elements. Finished sheets, the render
+    report and the manifest land in the project exactly as from Render All
+    Sheets (Skou feedback #14, #39).
+    """
+
+    bl_idname = "reblend.render_background"
+    bl_label = "Render in Background"
+
+    scope: bpy.props.EnumProperty(
+        name="Scope",
+        items=(
+            ("ALL", "All", "Every RE Element"),
+            ("DIRTY", "Changed", "Only sheets whose inputs changed since their last render"),
+            ("ACTIVE", "Active", "Only the active element"),
+        ),
+        default="DIRTY",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _poll_project(cls, context) and not background_running() \
+            and bool(bpy.app.binary_path)
+
+    def execute(self, context):
+        import queue
+        import threading
+
+        global _BG_JOB
+        try:
+            root = _project_root(context)
+        except LuaConfigError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        element = ""
+        if self.scope == "ACTIVE":
+            active = context.collection
+            if active is None or not schema.is_element(active):
+                self.report({"ERROR"}, "active collection is not an RE Element")
+                return {"CANCELLED"}
+            element = active.name
+
+        scratch = Path(tempfile.mkdtemp(prefix="reblend_bg_"))
+        stem = Path(bpy.data.filepath).stem if bpy.data.filepath else "untitled"
+        blend = scratch / f"{stem}.blend"
+        report = scratch / "report.json"
+        bpy.ops.wm.save_as_mainfile(filepath=str(blend), copy=True, check_existing=False)
+        cmd = background_command(bpy.app.binary_path, blend, root, self.scope, report, element)
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True, bufsize=1)
+        except OSError as exc:
+            self.report({"ERROR"}, f"could not start Blender: {exc}")
+            return {"CANCELLED"}
+
+        lines: "queue.Queue[str]" = queue.Queue()
+
+        def pump():
+            for line in process.stdout:
+                lines.put(line)
+
+        threading.Thread(target=pump, daemon=True).start()
+        settings = _settings(context)
+        settings.render_state = "RUNNING"
+        settings.render_progress = 0.0
+        settings.render_message = "starting Blender"
+        _BG_JOB = {"process": process, "lines": lines, "report": report,
+                   "scratch": scratch, "root": root, "cancel": False, "log": []}
+        self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        global _BG_JOB
+        job = _BG_JOB
+        if job is None:
+            return {"CANCELLED"}
+        if event.type == "ESC":
+            job["cancel"] = True
+        if event.type != "TIMER" and not job["cancel"]:
+            return {"PASS_THROUGH"}
+        settings = _settings(context)
+        while not job["lines"].empty():
+            line = job["lines"].get()
+            job["log"].append(line)
+            try:
+                tick = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(tick, dict) and "progress" in tick:
+                total = tick.get("total") or 0
+                settings.render_progress = 100.0 * tick["progress"] / total if total else 100.0
+                settings.render_message = f"{tick['progress']}/{total} {tick.get('element', '')}"
+        process = job["process"]
+        if job["cancel"] and process.poll() is None:
+            process.terminate()
+        if process.poll() is None:
+            _redraw(context)
+            return {"PASS_THROUGH"}
+
+        context.window_manager.event_timer_remove(self._timer)
+        self._finish(context, job)
+        _BG_JOB = None
+        _redraw(context)
+        return {"FINISHED"}
+
+    def _finish(self, context, job) -> None:
+        settings = _settings(context)
+        settings.render_finished = props._timestamp()
+        if job["cancel"]:
+            settings.render_state = "CANCELLED"
+            settings.render_message = "cancelled; sheets already written are kept"
+            self.report({"WARNING"}, "background render cancelled")
+            _reload_project_images(job["root"])
+            return
+        try:
+            result = json.loads(job["report"].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            settings.render_state = "FAILED"
+            settings.render_message = "the background Blender stopped without a report"
+            tail = "".join(job["log"][-20:])
+            print(f"[RE-Blend] background render log tail:\n{tail}")
+            self.report({"ERROR"}, "background render failed; see the console")
+            return
+        findings = [validation.Finding(f["severity"], f["code"], f["message"],
+                                       f.get("subject", ""), f.get("panel", ""))
+                    for f in result.get("findings", [])]
+        props.store_render_report(settings, findings)
+        settings.render_state = result.get("render_state") or (
+            "DONE" if result.get("exit_code") == 0 else "FAILED")
+        settings.render_progress = 100.0
+        settings.render_message = result.get("summary", "")
+        _reload_project_images(job["root"])
+        level = {"INFO"} if result.get("exit_code") == 0 else {"ERROR"}
+        self.report(level, result.get("summary", "background render finished"))
+        shutil.rmtree(job["scratch"], ignore_errors=True)
+
+
+class REBLEND_OT_cancel_background_render(bpy.types.Operator):
+    """Stop the background render after the element it is on"""
+
+    bl_idname = "reblend.cancel_background_render"
+    bl_label = "Cancel Background Render"
+
+    @classmethod
+    def poll(cls, context):
+        return background_running()
+
+    def execute(self, context):
+        if _BG_JOB is not None:
+            _BG_JOB["cancel"] = True
+        return {"FINISHED"}
+
+
+def _reload_project_images(root: Path) -> None:
+    """Images in Blender that show the project's sheets pick up the new files."""
+    gui2d = str((root / "GUI2D").resolve())
+    for image in bpy.data.images:
+        if image.source == "FILE" and bpy.path.abspath(image.filepath).startswith(gui2d):
+            image.reload()
+
+
+def _redraw(context) -> None:
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+CLASSES = CLASSES + (
+    REBLEND_OT_render_background,
+    REBLEND_OT_cancel_background_render,
+    REBLEND_OT_centre_selected,
+)
+
+
+# --- palette and material kit (design §5.7) --------------------------------
+
+def _palette_file(context) -> Path:
+    path = Path(bpy.path.abspath(_settings(context).palette_path))
+    if not path.is_absolute():
+        path = _project_root(context) / path
+    return path
+
+
+class REBLEND_OT_load_palette(bpy.types.Operator):
+    """Read the project palette into the 'RE Palette' node group: one colour
+    output per swatch, so an accent is picked instead of retyped"""
+
+    bl_idname = "reblend.load_palette"
+    bl_label = "Load Palette"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+        from ..project.palette import PaletteError, read_palette
+
+        try:
+            swatches = read_palette(_palette_file(context))
+        except (PaletteError, LuaConfigError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        kit.palette_group(swatches)
+        self.report({"INFO"}, f"palette: {len(swatches)} swatch(es) in '{kit.PALETTE_GROUP}'")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_add_material_starter(bpy.types.Operator):
+    """Add a material from a starter node group and assign it to the selected
+    objects (their active slot)"""
+
+    bl_idname = "reblend.add_material_starter"
+    bl_label = "Add Material Starter"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        key = _settings(context).material_starter
+        material = kit.material_starter(key)
+        assigned = 0
+        for obj in context.selected_objects:
+            if obj.type not in {"MESH", "CURVE", "FONT", "SURFACE", "META"}:
+                continue
+            if obj.material_slots:
+                obj.material_slots[obj.active_material_index].material = material
+            else:
+                obj.data.materials.append(material)
+            assigned += 1
+        self.report({"INFO"}, f"material '{material.name}'"
+                              + (f" on {assigned} object(s)" if assigned else ""))
+        return {"FINISHED"}
+
+
+class REBLEND_OT_add_lighting_rig(bpy.types.Operator):
+    """Add the studio-hardware panel light: a soft key from the upper left at
+    about 35 degrees, a low cool fill and a faint rim, around the camera axis.
+    Appends the saved template instead when one is set"""
+
+    bl_idname = "reblend.add_lighting_rig"
+    bl_label = "Add Lighting Rig"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        settings = _settings(context)
+        template = bpy.path.abspath(settings.rig_template) if settings.rig_template else ""
+        if template:
+            existing = bpy.data.collections.get(kit.RIG_COLLECTION)
+            if existing is not None:
+                self.report({"ERROR"}, f"'{kit.RIG_COLLECTION}' already exists; remove it "
+                                       "before appending the template")
+                return {"CANCELLED"}
+            try:
+                kit.append_rig_template(template)
+            except (OSError, ValueError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"appended the rig from {template}")
+            return {"FINISHED"}
+        kit.lighting_rig(context.scene, settings.camera_axis, settings.ppb)
+        self.report({"INFO"}, f"'{kit.RIG_COLLECTION}' built for the {settings.camera_axis} "
+                              "camera axis")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_save_rig_template(bpy.types.Operator):
+    """Save the scene's 'RE Lighting Rig' collection as a .blend template, so
+    other files and devices of the brand light the same way"""
+
+    bl_idname = "reblend.save_rig_template"
+    bl_label = "Save Rig as Template"
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+
+    def invoke(self, context, event):
+        self.filepath = bpy.path.abspath(_settings(context).rig_template) or "lighting_rig.blend"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        collection = bpy.data.collections.get(kit.RIG_COLLECTION)
+        if collection is None:
+            self.report({"ERROR"}, f"no '{kit.RIG_COLLECTION}' collection to save")
+            return {"CANCELLED"}
+        path = bpy.path.abspath(self.filepath)
+        if not path.endswith(".blend"):
+            path += ".blend"
+        kit.save_rig_template(path, collection)
+        _settings(context).rig_template = path
+        self.report({"INFO"}, f"rig saved to {path}")
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (
+    REBLEND_OT_load_palette,
+    REBLEND_OT_add_material_starter,
+    REBLEND_OT_add_lighting_rig,
+    REBLEND_OT_save_rig_template,
+)
+
+
+# --- art variants (Skou feedback #16, #20) ----------------------------------
+
+def element_variants(collection) -> list:
+    """The element's variant child collections (``re_variant`` set), in order."""
+    return [c for c in collection.children if c.get("re_variant")]
+
+
+def use_variant(collection, name: str) -> int:
+    """Show variant ``name`` of an element and hide its other variants, in the
+    viewport and the render. Returns how many variants were hidden."""
+    hidden = 0
+    for child in element_variants(collection):
+        off = child["re_variant"] != name
+        child.hide_render = off
+        child.hide_viewport = off
+        hidden += off
+    collection["re_variant"] = name
+    return hidden
+
+
+class REBLEND_OT_add_variant(bpy.types.Operator):
+    """Move the selected objects of the active element into a new art variant
+    (a child collection), so alternative art, such as 3D silk versus a 2D
+    overlay, can be switched as a group"""
+
+    bl_idname = "reblend.add_variant"
+    bl_label = "Add Art Variant"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty(name="Name", default="Variant")  # type: ignore[valid-type]
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        name = self.name.strip()
+        if not name or any(c["re_variant"] == name for c in element_variants(collection)):
+            self.report({"ERROR"}, f"variant name '{name}' is empty or already used")
+            return {"CANCELLED"}
+        child = bpy.data.collections.new(f"{collection.name} · {name}")
+        child["re_variant"] = name
+        collection.children.link(child)
+        moved = 0
+        for obj in context.selected_objects:
+            if obj.name not in collection.all_objects:
+                continue
+            for parent in [c for c in obj.users_collection
+                           if c is collection or c in element_variants(collection)]:
+                parent.objects.unlink(obj)
+            child.objects.link(obj)
+            moved += 1
+        use_variant(collection, name)
+        self.report({"INFO"}, f"variant '{name}' with {moved} object(s); now in use")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_use_variant(bpy.types.Operator):
+    """Render and show this art variant of the active element; hide the others"""
+
+    bl_idname = "reblend.use_variant"
+    bl_label = "Use Variant"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty()  # type: ignore[valid-type]
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        if not any(c["re_variant"] == self.name for c in element_variants(collection)):
+            self.report({"ERROR"}, f"no variant '{self.name}'")
+            return {"CANCELLED"}
+        use_variant(collection, self.name)
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (REBLEND_OT_add_variant, REBLEND_OT_use_variant)
+
+
+class REBLEND_OT_add_touch_point(bpy.types.Operator):
+    """Add the 'RE Touch Point' node to the active object's material: object
+    coordinates offset and turned per object, so wear on mirrored touch points
+    does not repeat. Wire it between Texture Coordinate and the wear texture"""
+
+    bl_idname = "reblend.add_touch_point"
+    bl_label = "Add Touch-Point Mapping"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        obj = context.active_object
+        material = obj.active_material if obj is not None else None
+        if material is None or material.node_tree is None:
+            self.report({"ERROR"}, "the active object has no node material")
+            return {"CANCELLED"}
+        node = material.node_tree.nodes.new("ShaderNodeGroup")
+        node.node_tree = kit.touch_point_group()
+        node.location = (-600, 300)
+        node.select = True
+        material.node_tree.nodes.active = node
+        self.report({"INFO"}, f"added '{kit.TOUCH_GROUP}' to '{material.name}'; connect its "
+                              "Vector to the wear texture")
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (REBLEND_OT_add_touch_point,)
+
+
+# --- live overlap hint (Skou feedback #33) -----------------------------------
+
+#: The last overlap message for the element being moved ("" = none). A module
+#: value, not a scene property: writing ID data from a depsgraph handler would
+#: trigger another update.
+LIVE_OVERLAP = {"element": "", "message": ""}
+
+
+def overlap_message(context, collection) -> str:
+    """Which elements the given element's frame overlaps where its
+    registration empty is now ("" when none): the validator's ``overlap``
+    check, run for one element while it is being moved."""
+    settings = _settings(context)
+    moving = _element_snapshot(collection, settings)
+    if not (moving.frame_w and moving.frame_h) or moving.kind == kinds.BACKDROP:
+        return ""
+    hits = []
+    for other in _element_collections(context.scene):
+        if other is collection:
+            continue
+        data = schema.props_to_data(other)
+        if data.kind == kinds.BACKDROP or not (data.frame_w and data.frame_h):
+            continue
+        for a in moving.effective_placements:
+            for b in _element_snapshot(other, settings).effective_placements:
+                if a.panel != b.panel:
+                    continue
+                if (a.x < b.x + data.frame_w and b.x < a.x + moving.frame_w
+                        and a.y < b.y + data.frame_h and b.y < a.y + moving.frame_h):
+                    hits.append(b.node)
+    if not hits:
+        return ""
+    return "overlaps " + ", ".join(sorted(set(hits)))
+
+
+@bpy.app.handlers.persistent
+def live_overlap_handler(scene, depsgraph=None) -> None:
+    """depsgraph_update_post: when the active object is an element's
+    registration empty and it moved, refresh :data:`LIVE_OVERLAP`."""
+    context = bpy.context
+    obj = getattr(context, "active_object", None)
+    if obj is None or obj.type != "EMPTY" or depsgraph is None:
+        return
+    if not any(getattr(u.id, "original", None) is obj and u.is_updated_transform
+               for u in depsgraph.updates):
+        return
+    for collection in _element_collections(scene):
+        if collection.get("re_registration") == obj.name:
+            LIVE_OVERLAP["element"] = collection.name
+            LIVE_OVERLAP["message"] = overlap_message(context, collection)
+            if getattr(context, "window_manager", None) is not None:
+                _redraw(context)
+            return

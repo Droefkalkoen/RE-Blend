@@ -210,6 +210,7 @@ def turntable_expression(
     frames: int,
     sweep_deg: float = DEFAULT_SWEEP_DEG,
     axis: tuple[float, float, float] = AXIS_VECTORS[DEFAULT_CAMERA_AXIS],
+    zero_deg: float = 0.0,
 ) -> tuple[int, str]:
     """The knob rotation driver: ``(rotation_euler index, expression)``.
 
@@ -223,12 +224,18 @@ def turntable_expression(
     The earlier ``+sign`` form ran backwards for the default −Y axis (frame 0
     at 5 o'clock, counter-clockwise rise); the pilot hand-fixed its drivers
     to ``radians(-150 + 300 * frame / 60)`` about Y (Skou feedback #17).
+
+    ``zero_deg`` is where the modelled pointer sits at rest, clockwise of
+    12 o'clock as the viewer sees it; the rig subtracts it so the centre
+    frame points straight up (Skou feedback #18: a pointer modelled 5.35°
+    clockwise left every frame 5.35° off).
     """
     if frames < 2:
         raise ValueError(f"a knob needs at least 2 frames, got {frames}")
     index, sign = dominant_axis(tuple(axis))
     half = sweep_deg / 2.0
-    expression = f"radians({-sign} * (-{half} + {sweep_deg} * frame / {frames - 1}))"
+    zero = f" - {zero_deg:g}" if zero_deg else ""
+    expression = f"radians({-sign} * (-{half} + {sweep_deg} * frame / {frames - 1}{zero}))"
     return index, expression
 
 

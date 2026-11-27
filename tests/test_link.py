@@ -111,3 +111,11 @@ def test_element_data_bridge(project):
     assert data.kind == kinds.FADER_HANDLE
     assert data.frames == 3
     assert data.placements[0].panel == "folded_front"
+
+
+def test_onoffbypass_fader_is_marked(silence_detector):
+    from reblend.project.link import load_project
+
+    specs = {s.path: s for s in load_project(silence_detector).specs}
+    assert specs["Fader_25x60_3frames"].onoffbypass
+    assert not specs["Knob_65x65_61frames"].onoffbypass

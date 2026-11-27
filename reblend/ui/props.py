@@ -87,6 +87,32 @@ def _resolution_items(self, _context):
     return _RESOLUTION_ITEMS
 
 
+def default_resolution(status: str) -> str:
+    """The choice a fresh diff row starts with: take the project's value for
+    added and changed items, keep the element for removed ones."""
+    from ..project import merge
+
+    return "MINE" if status == merge.REMOVED else "THEIRS"
+
+
+def valid_resolutions(status: str) -> tuple[str, ...]:
+    from ..project import merge
+
+    items = _RESOLUTION_ITEMS_REMOVED if status == merge.REMOVED else _RESOLUTION_ITEMS
+    return tuple(identifier for identifier, _name, _desc in items)
+
+
+def _get_resolution_ui(self) -> int:
+    choices = valid_resolutions(self.status)
+    value = self.resolution or default_resolution(self.status)
+    return choices.index(value) if value in choices else 0
+
+
+def _set_resolution_ui(self, index: int) -> None:
+    choices = valid_resolutions(self.status)
+    self.resolution = choices[index] if 0 <= index < len(choices) else choices[0]
+
+
 class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
     """One row of the last Sync diff (mirrors merge.MergeItem).
 
@@ -99,9 +125,20 @@ class REBLEND_PG_merge_item(bpy.types.PropertyGroup):
     path: bpy.props.StringProperty()
     status: bpy.props.StringProperty()
     summary: bpy.props.StringProperty()
-    resolution: bpy.props.EnumProperty(
+    # A plain string, not an enum, so a script can read and set it (Skou
+    # feedback #4: a dynamic enum reads back empty outside the UI). Values:
+    # THEIRS, MINE, or DELETE (removed items only). The panel draws
+    # ``resolution_ui``, an enum view over the same value.
+    resolution: bpy.props.StringProperty(
+        name="Choice",
+        description="THEIRS (use the project's value), MINE (keep the "
+                    "scene's) or, for removed elements, DELETE",
+    )
+    resolution_ui: bpy.props.EnumProperty(
         name="Choice",
         items=_resolution_items,
+        get=_get_resolution_ui,
+        set=_set_resolution_ui,
     )
 
 
@@ -151,11 +188,41 @@ def tool_preferences(context):
     return addon.preferences if addon is not None else None
 
 
+def _starter_items() -> dict:
+    # The kit's table without importing kit (which needs a scene to be useful).
+    return {
+        "BRUSHED": ("Brushed Metal", "Anisotropic metal with a directional grain"),
+        "ANODISED": ("Anodised Metal", "Coloured metal with a thin clear coat"),
+        "GLASS": ("Dark Glass", "Glossy dark glass for meter and display windows"),
+        "PLASTIC": ("Plastic Cap", "Satin plastic for knob caps and buttons"),
+        "KNURL": ("Machined Knurl", "Metal with a diamond knurl, for knob grips"),
+    }
+
+
 class REBLEND_PG_settings(bpy.types.PropertyGroup):
     project_root: bpy.props.StringProperty(
         name="RE Project",
         description="Root of the linked RE project (the directory containing GUI2D/)",
         subtype="DIR_PATH",
+    )
+    palette_path: bpy.props.StringProperty(
+        name="Palette",
+        description="Palette file, relative to the RE project or absolute: JSON "
+                    "({name: hex}) or text lines with a name and #RRGGBB (§5.7)",
+        default="Design/palette.json",
+    )
+    material_starter: bpy.props.EnumProperty(
+        name="Starter",
+        description="Material starter to add (§5.7)",
+        items=[(k, label, desc) for k, (label, desc) in _starter_items().items()],
+        default="BRUSHED",
+    )
+    rig_template: bpy.props.StringProperty(
+        name="Rig Template",
+        description="A .blend holding a saved 'RE Lighting Rig' collection. Add "
+                    "Lighting Rig appends it when set, else builds the default rig",
+        subtype="FILE_PATH",
+        default="",
     )
     ppb: bpy.props.FloatProperty(
         name="Pixels / Unit",
@@ -248,6 +315,52 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         ),
         default="SHADOW",
     )
+    caster_bounce: bpy.props.BoolProperty(
+        name="Keep Bounce Light",
+        description="Cast Shadows isolation: hide the other elements from the "
+                    "camera only, so the active element still reflects them "
+                    "and gets their bounce light. Off, they only cast shadows "
+                    "and an isolated metal part reflects the bare world "
+                    "instead of the panel",
+        default=False,
+    )
+    panel_isolation: bpy.props.BoolProperty(
+        name="Active Panel Only",
+        description="Elements on other panels sit each render out entirely. "
+                    "All panels share one world origin, so without this the "
+                    "back panel's parts shadow and reflect into front renders",
+        default=False,
+    )
+    alpha_floor: bpy.props.FloatProperty(
+        name="Alpha Floor",
+        description="Coverage below this becomes fully transparent and the "
+                    "rest is stretched back to 0..1. Clears the faint haze a "
+                    "shadow catcher leaves across the whole frame, which "
+                    "otherwise shows the sheet's rectangle on the panel. "
+                    "0 = off; around 0.07 removes typical ambient haze",
+        default=0.0,
+        min=0.0,
+        max=0.5,
+        precision=3,
+    )
+    # Render status (Skou feedback #23): a scripted or background render can
+    # check these instead of guessing whether every step finished.
+    render_state: bpy.props.EnumProperty(
+        name="Render State",
+        items=(
+            ("IDLE", "Idle", "No render has run in this session"),
+            ("RUNNING", "Running", "A render is in progress"),
+            ("DONE", "Done", "The last render finished with no failed sheet"),
+            ("FAILED", "Failed", "The last render finished, but a sheet failed"),
+            ("CANCELLED", "Cancelled", "The last render was cancelled"),
+        ),
+        default="IDLE",
+    )
+    render_progress: bpy.props.FloatProperty(
+        name="Progress", subtype="PERCENTAGE", min=0.0, max=100.0, default=0.0,
+    )
+    render_message: bpy.props.StringProperty(name="Render Message", default="")
+    render_finished: bpy.props.StringProperty(name="Render Finished", default="")
     preview_panel: bpy.props.EnumProperty(
         name="Panel",
         description="Which panel the compositor previews (§5.3)",
@@ -256,6 +369,13 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
             for panel in lua_reader.PANELS
         ),
         default=lua_reader.PANELS[0],
+    )
+    preview_half: bpy.props.BoolProperty(
+        name="0.5x",
+        description="Show the preview at half size, as Reason shows the low-res set on a "
+                    "1080p screen: fine grain and small text that will alias show up "
+                    "here first (Skou feedback #27)",
+        default=False,
     )
     #: The last Validate report. Render QA findings live in their own store
     #: (``render_findings``) so a render can never silently overwrite the
@@ -321,6 +441,16 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         get=lambda self: _active_sweep_deg(),
         set=lambda self, value: _set_active_sweep_deg(value),
     )
+    active_zero_deg: bpy.props.FloatProperty(
+        name="Pointer at Rest",
+        description="Where the modelled pointer sits at rest, in degrees "
+                    "clockwise of 12 o'clock as seen on the panel. Generate "
+                    "Rig turns it back so the centre frame points straight up",
+        min=-180.0,
+        max=180.0,
+        get=lambda self: _active_zero_deg(),
+        set=lambda self, value: _set_active_zero_deg(value),
+    )
     re2drender_output: bpy.props.EnumProperty(
         name="Output",
         description="Which asset set RE2DRender produces (its third "
@@ -376,6 +506,18 @@ def _set_active_rotor(name: str) -> None:
     from . import operators  # local: operators imports props at module load
 
     operators.set_active_rotor(bpy.context, name)
+
+
+def _active_zero_deg() -> float:
+    from . import operators
+
+    return operators.active_zero_deg(bpy.context)
+
+
+def _set_active_zero_deg(value: float) -> None:
+    from . import operators
+
+    operators.set_active_zero_deg(bpy.context, value)
 
 
 def _active_sweep_deg() -> float:
@@ -434,8 +576,8 @@ def store_merge_items(settings: REBLEND_PG_settings, items) -> None:
         row.path = item.path
         row.status = item.status
         row.summary = item.summary
-        if (item.path, item.status) in kept:
-            row.resolution = kept[(item.path, item.status)]
+        row.resolution = kept.get((item.path, item.status),
+                                  default_resolution(item.status))
 
 
 def attach() -> None:

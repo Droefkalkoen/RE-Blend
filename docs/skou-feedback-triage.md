@@ -1,82 +1,70 @@
-# Skou feedback: triage for the `develop` branch
+# Skou feedback: triage and status
 
 Skou (the pilot project) logged 39 issues with RE-Blend while its panels were built, in
-`docs/RE-Blend_feedback.md` in the Skou repo. Skou worked around all of them by hand and keeps
-using RE-Blend as it is on `main` until Skou ships, so none of these land on `main` directly.
-They land on `develop` (see "Branches" in `CLAUDE.md`), alongside RE Bench
-([`rebench-design.md`](rebench-design.md)), and `develop` merges into `main` once Skou is done.
+`docs/RE-Blend_feedback.md` in the Skou repo. Skou worked around all of them by hand on `main`.
+The fixes landed on `develop` (see "Branches" in `CLAUDE.md`), alongside RE Bench
+([`rebench-design.md`](rebench-design.md)). Skou has shipped, so `develop` now merges into
+`main`.
 
-Each item gets one disposition. Numbers are the Skou feedback numbers.
+Each item has one disposition. Numbers are the Skou feedback numbers. **Status as of
+2026-11-27: every item is done or by design.** Blender-side fixes have tests under
+`tests/blender/` (run with the `bpy` module); the rest are pure-Python tests.
 
-## A. Bugs: fix first on `develop`
+## A. Bugs
 
-Small, self-contained, and each one already cost Skou a manual workaround. Verify each against
-`develop` before fixing: some may already be fixed by later commits (the `props.py` getters in
-#1 look resolved on the current code).
-
-Status as of the first fix pass on `develop`: **fixed** (with a test), **resolved** (already
-fixed by later code), **by design** (documented instead), or **open** (needs Blender to
-reproduce and test; not fixed in a headless container).
-
-| # | Bug | Where | Status |
-| --- | --- | --- | --- |
-| 1 | Panel property getters raise `NameError` (`_active_frame_size` and friends) | `ui/props.py` | resolved: the getters now call module-level helpers |
-| 2 | Preview Panel fails on a second run once the preview image is saved | `ui/operators.py` `_show_image` | open |
-| 3 | Apply Choices reverts designer-set frame sizes to the stale PNG size | `project/merge.py`, frame-size probe | fixed: frame size is no longer a merge item; a stale sheet is a `png-dims` finding |
-| 4 | Merge-item `resolution` enum is empty from Python | `ui/props.py` dynamic enum | open |
-| 5 | Placement 0 of a multi-placement element ignores `re_placements` | `model/schema.py`, placement code | by design: placement 0 follows the registration empty; move the empty, not the JSON |
-| 17 | Knob turntable runs backwards for a `neg_y` camera | `model/rigs.py` driver expression | fixed: `calibration.turntable_expression`, tested for all six camera axes |
-| 22, 34 | Copied elements share state actions; Generate Rig rewrites the original's keys | `model/rigs.py`: own action per element, or refuse | open |
-| 37 | False "shadow-owner: slides N px" after moving an element | `project/validation.py` `_check_shadow_owner` | partly: the check measures live, so the slide is real until the state keys are regenerated; the message now says to run Generate Rig |
-| 35 | Hidden objects report stale bounds to placement helpers | helpers that place state-dependent objects | partly: the frame-travel measurement behind `shadow-owner` now skips objects hidden at a frame (they gave false errors on the first Validate after loading); the placement helpers are still open |
-| 6 | Drivers invalid after `material.copy()`; Repair Channels could re-validate | `ui/operators.py` repair | open |
-| 23 | A failing step after a render goes unnoticed: add a render-complete flag | `render/renderer.py` | open |
-
-## B. Rules: move into the shared rule catalogue (RE Bench phase 1)
-
-These become entries in the catalogue that both the Blender validator and RE Bench run.
-
-| # | Rule |
-| --- | --- |
-| 8 | Vertical `sequence_fader` frame 0 shows the handle at the bottom (`inverted` changes the mapping only) |
-| 9 | SDK parts' frame counts known (audio and CV jacks are 3-frame strips) |
-| 10 | No "alpha touches the border" warning for backdrops and full-bleed display windows |
-| 24 | Rack-ear keep-out: nothing but ear art at x < 160 or x > 3610 (house rule, configurable) |
-| 26 | Text size: functional labels at least 43 px (SDK guideline; floor configurable) |
-| 29 | Fold-arrow keep-out on all panels; effects need on/off/bypass top-left on front and folded front |
-| 30 | Rack-ear screws aligned with Reason's rack holes |
-| 31 | Back panel carries every `Routing_Icon_*` the routing hint implies |
-| 36 | `radio_button` is its own kind (2 frames, grouped by property and index), not `button_momentary` |
-| 7 | Findings show their age; re-validate on load and after Generate Rig |
-
-## C. Covered by the RE Bench handoff (phase 3)
-
-| # | Item | How the bench covers it |
+| # | Bug | Status |
 | --- | --- | --- |
-| 15 | New nodes need hand edits to two Lua files | Done (phase 3): `add_control` writes property, widget, node and name in one step |
-| 11 | Fader template seeds wrong state names and a 0 x 0 frame | Frame size: done (phase 3, import reads `rebench.json`); state names still open |
-| 38 | Derived sheets (cropped folded fader) are not understood | Per-placement crop / frame override in the sidecar |
-| 25 | SDK parts copied at the wrong resolution | Bench SDK parts library resolves the canonical `RE2DRender/Images` files and checks size |
-| 28 | SDK jack art is not centred in its frame | Bench places SDK parts by visible (alpha) centre |
-| 33 | Overlap only shows up after placement changes | Live overlap check on the bench canvas; Blender keeps the validator check |
-| 27 | No half-resolution preview | Bench 0.5x view; a Blender toggle stays on the stretch list |
+| 1 | Panel property getters raise `NameError` | resolved: the getters call module-level helpers |
+| 2 | Preview Panel fails on a second run once the preview image is saved | fixed: a saved or file-backed preview image is recreated |
+| 3 | Apply Choices reverts designer-set frame sizes | fixed: frame size is no longer a merge item; a stale sheet is a `png-dims` finding |
+| 4 | Merge-item `resolution` enum is empty from Python | fixed: a string property with an enum proxy for the UI; Apply refuses an unknown choice |
+| 5 | Placement 0 ignores `re_placements` | by design: placement 0 follows the registration empty |
+| 6 | Drivers invalid after `material.copy()` | fixed: Repair Channels re-validates drivers |
+| 17 | Knob turntable runs backwards for a `neg_y` camera | fixed: `calibration.turntable_expression`, tested for all six axes |
+| 22, 34 | Copied elements share state actions | fixed: Generate Rig gives each element's objects their own action |
+| 23 | A failing step after a render goes unnoticed | fixed: the render state (running, done, failed, cancelled) shows in the Render panel and the headless report |
+| 35 | Hidden objects report stale bounds | fixed: travel sampling skips hidden objects; *Centre Selected on Element* measures hidden objects shown (`world_bounds_unhidden`) |
+| 37 | False "shadow-owner: slides N px" after moving | fixed: the message says to run Generate Rig; the check measures live |
 
-## D. Blender rendering features: later on `develop`, not blocking the bench
+## B. Rules (one catalogue, one engine)
 
-| # | Feature |
-| --- | --- |
-| 14, 39 | Render in a background `blender -b` process with progress and cancel (Skou already does this by hand) |
-| 12 | "Shadows + bounce" isolation mode as a setting (Skou patches `_SHADOW_ONLY_OFF`) |
-| 13 | Panel-aware isolation (per-panel origin or active-panel-only) |
-| 19 | Alpha floor / feather-to-edge render option (Skou remaps alpha with a 7 % floor) |
-| 32 | Reload file-backed images whose mtime changed before rendering |
-| 18 | Knob zero-angle calibration ("pointer at rest" angle) |
-| 16, 20 | Per-element art variants (3D silk versus Photoshop overlay) |
-| 21 | Wear / touch-point helper with per-point seeds |
+The bench's layout rules moved into `reblend/project/layout.py`, so `rebench check` and
+RE-Blend's Validate run the same rules (`validate_link(..., rules=True)`).
 
-## Order on `develop`
+| # | Rule | Status |
+| --- | --- | --- |
+| 8 | Vertical fader frame 0 shows the handle at the bottom | done: `fader-direction` (Validate) |
+| 9 | SDK parts' frame counts known | done: `sdk-part-frames` |
+| 10 | No border-alpha warning for backdrops and full-bleed windows | done: backdrop and display kinds, plus a per-element Full Bleed flag |
+| 24 | Rack-ear keep-out | done: `rack-ear` (profile) |
+| 26 | Text size at least 43 px | done: `text-size` (sidecar labels) |
+| 29 | Fold-arrow keep-out; effect bypass top-left | done: `fold-arrow`, `bypass-top-left` |
+| 30 | Rack-ear screws on Reason's rack holes | done: `rack-screws`, from screw nodes and sidecar `art` marks |
+| 31 | Routing icons match the routing hint | done: `routing-icons`, from `Routing_Icon_*` nodes and sidecar `art` marks |
+| 36 | `radio_button` is its own kind | done: `button_radio` (2 frames: released, held) |
+| 7 | Findings show their age; re-validate on load and after Generate Rig | done |
 
-1. Section A bugs, each with a test where the code is pure Python.
-2. RE Bench phase 1 with the section B rules (shared catalogue + `rebench check`).
-3. RE Bench phases 2 and 3; section C falls out of them.
-4. Section D as Skou or the next device needs it.
+## C. RE Bench
+
+| # | Item | Status |
+| --- | --- | --- |
+| 15 | New nodes need hand edits to two Lua files | done: `add_control`, and `remove_control` to undo it |
+| 11 | Fader template seeds wrong state names and a 0 x 0 frame | done: sidecar frame sizes; On/Off/Bypass faders get off/on/bypass, others none |
+| 38 | Derived sheets (cropped folded fader) | done: `derive` / `underive`; RE-Blend writes the crop when it renders the source |
+| 25 | SDK parts copied at the wrong resolution | done: canonical names and hi-res sizes; `sdk-part-size`; Install SDK Parts prefers a right-size copy |
+| 28 | SDK jack art is not centred in its frame | done: `centre` op with `visible: true` |
+| 33 | Overlap only shows up after placement changes | done: live overlap on the bench canvas, and a live warning in Blender while an empty is dragged |
+| 27 | No half-resolution preview | done: bench 0.5x view and a 0.5x toggle on Blender's Preview |
+
+## D. Blender rendering and modelling
+
+| # | Feature | Status |
+| --- | --- | --- |
+| 14, 39 | Background render with progress and cancel; per-element samples | done |
+| 12 | Shadow casters that keep bounce light | done: Render option |
+| 13 | Panel-aware isolation | done: Render option |
+| 19 | Alpha floor against shadow-catcher haze | done: Render option |
+| 32 | Reload edited images before rendering | done |
+| 18 | Knob zero-angle calibration | done: Pointer at Rest (`re_zero_deg`) |
+| 16, 20 | Per-element art variants | done: Add Art Variant / Use Variant (child collections) |
+| 21 | Wear / touch points with per-point seeds | done: `RE Touch Point` node group |

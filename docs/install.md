@@ -12,8 +12,24 @@ Two things the manifest requires that trip people up:
    build or symlink, the *extension root* is the `reblend/` folder, not the repo root.
 2. **`lupa` must be importable inside Blender's Python.** `reblend/project/lua_reader.py` does a
    top-level `import lupa`, which `register()` pulls in, so without it enabling the add-on throws
-   `ModuleNotFoundError: No module named 'lupa'`. The extension does not yet bundle the wheel
-   (see *Bundling lupa* below), so for now install it into Blender's interpreter yourself.
+   `ModuleNotFoundError: No module named 'lupa'`. The packaged zips (section 0) bundle it; a
+   source folder linked into Blender (section 2a) does not, so install it there yourself
+   (section 1).
+
+## 0. Install a packaged zip (recommended)
+
+`tools/package.py` builds one zip per platform with the `lupa` wheels for Blender's Pythons
+(3.11 for Blender 4.2 to 4.5, 3.13 for 5.x) bundled, so nothing has to be installed into
+Blender's own Python:
+
+```sh
+python3 tools/package.py                  # writes dist/reblend-<version>-<platform>.zip
+python3 tools/package.py --blender blender   # also runs Blender's extension validator
+```
+
+It needs network access to PyPI the first time (wheels are cached in `build/wheels/`). Then in
+Blender: **Edit ▸ Preferences ▸ Get Extensions ▸ ⌄ ▸ Install from Disk…** and pick the zip for
+your platform (`windows-x64`, `macos-arm64`, `macos-x64` or `linux-x64`). Skip sections 1 and 2.
 
 **After a Blender upgrade** (Steam updates in place) the new version starts with a fresh
 profile and its own Python: repeat sections 1 and 2 for the new version number. The junction
@@ -85,29 +101,11 @@ list. The **RE-Blend** tab appears in the 3D-viewport N-panel.
 (If junctions/symlinks are inconvenient, copying the `reblend/` folder to that target works too —
 you just have to recopy after edits.)
 
-## 2b. Build a distributable `.zip`
+## 2b. Build a zip with Blender's own tool
 
-For a shippable artifact, build from the package dir and install the zip:
-
-```sh
-blender --command extension build --source-dir reblend --output-dir dist
-```
-
-Then **Get Extensions ▸ ⌄ ▸ Install from Disk…** and pick `dist/reblend-<version>.zip` (or drag
-the zip onto the Blender window). A zip built this way still needs `lupa` present on the target
-machine unless the wheel is bundled.
-
-## Bundling `lupa` (for a self-contained zip)
-
-To make the zip install without a manual `pip install`, vendor the platform wheel(s):
-
-1. Download the matching `lupa` wheel(s) into `reblend/wheels/` (one per platform/Python you
-   support — the wheel is a compiled extension, so it is platform-specific).
-2. Uncomment and fill the `wheels = [...]` line in `reblend/blender_manifest.toml` (paths are
-   relative to the manifest, e.g. `./wheels/lupa-2.8-cp311-...whl`).
-3. Rebuild with the command in 2b.
-
-Wheels are intentionally not committed yet; until they are, use the step-1 manual install.
+`blender --command extension build --source-dir reblend --output-dir dist` also works, but it
+does not bundle `lupa` (the committed manifest lists no wheels, so a linked source folder keeps
+loading). Use `tools/package.py` (section 0) for a zip that installs on its own.
 
 ## Troubleshooting
 
