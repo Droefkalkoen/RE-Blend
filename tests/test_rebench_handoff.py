@@ -279,3 +279,25 @@ def test_blockout_meshes():
     assert blockout_mesh({"type": "knob"}, 0, 0, 100) is None
     box = blockout_mesh({"type": "panel-thing"}, 100, 50, ppb=100)
     assert box.kind == "box" and len(box.faces) == 6
+
+
+def test_instrument_template_passes_every_rule(tmp_path):
+    root = tmp_path / "tiny"
+    new_device(root, DeviceIdentity("Tiny Synth", "Terp Audio"), template="instrument")
+    assert rules_check(root)["findings"] == []
+    info = _execute_sandboxed(root / "info.lua")
+    assert info["device_type"] == "instrument" and info["accepts_notes"] is True
+    for name in ("motherboard_def.lua", "realtime_controller.lua"):
+        _execute_sandboxed(root / name)
+    assert _ui_text_keys((root / "motherboard_def.lua").read_text()) <= set(_texts(root))
+    assert "builtin_onoffbypass" not in (root / "GUI2D/hdgui_2D.lua").read_text()
+    assert "/note_states/*" in (root / "realtime_controller.lua").read_text()
+    assert "@@" not in "".join(p.read_text() for p in root.rglob("*")
+                               if p.is_file() and p.suffix in {".lua", ".cpp", ".h", ".txt", ".md"})
+
+
+def test_instrument_template_two_units(tmp_path):
+    root = tmp_path / "tall"
+    new_device(root, DeviceIdentity("Tall Synth", "Terp Audio", height_ru=2),
+               template="instrument")
+    assert rules_check(root)["findings"] == []

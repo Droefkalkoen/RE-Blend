@@ -1,11 +1,17 @@
 """``rebench new``: start a device from a template.
 
-The effect template is a stereo ``creative_fx`` with one Level knob, the
+Two templates: ``effect`` and ``instrument``. The effect template is a stereo ``creative_fx`` with one Level knob, the
 On/Off/Bypass fader, the name tape on all four panels, stereo jacks and the
 placeholder: the smallest device that passes the rule catalogue, builds with
 pongasoft re-cmake and opens in Recon. Its C++ is a gain stage that follows
 the host's On/Off/Bypass switch, as an effect must. Grey-box sprites are drawn
 straight away, so the build has art to compile.
+
+The instrument template is an ``instrument`` that accepts notes: a monophonic
+sine voice (last note wins, short attack and release) with one Level knob,
+stereo outputs, the name tape on all four panels and the placeholder. It has
+no On/Off/Bypass control (instruments do not get one) and no routing icons
+(those are for effects).
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from .sidecar import Sidecar
 __all__ = ["TEMPLATES", "DeviceIdentity", "new_device"]
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
-TEMPLATES = ("effect",)
+TEMPLATES = ("effect", "instrument")
 #: Template file name -> name in the new project (dotfiles do not package well).
 _RENAMES = {"gitignore.txt": ".gitignore"}
 _TEXT_SUFFIXES = {".lua", ".cpp", ".h", ".txt", ".md", ".json", ".example"}
