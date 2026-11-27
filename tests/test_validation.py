@@ -642,3 +642,31 @@ def test_static_decoration_may_overlap_other_widgets(project_dir):
     link, elements = make_scene(project_dir)
     report = validate_link(link, elements)
     assert not [f for f in report.warnings if f.code == "overlap"]
+
+
+def test_fader_running_top_down_is_an_error():
+    """Skou feedback #8: frame 0 of a fader shows the handle at the bottom."""
+    from reblend.model import kinds, schema
+    from reblend.project.validation import Report, _check_fader_direction
+
+    def fader(u, v):
+        return schema.ElementData(
+            node="n", path="fader", kind=kinds.FADER_HANDLE, frames=3,
+            frame_travel=schema.Travel(across=abs(u) + abs(v), slide_u=u, slide_v=v))
+
+    report = Report()
+    _check_fader_direction(report, [fader(0, -120)])
+    assert [f.code for f in report.errors] == ["fader-direction"]
+    report = Report()
+    _check_fader_direction(report, [fader(0, 120), fader(90, 2)])
+    assert not report.findings
+    report = Report()
+    _check_fader_direction(report, [fader(-90, 2)])
+    assert "leftmost" in report.errors[0].message
+
+
+def test_travel_records_the_net_slide():
+    from reblend.render.shadows import travel_from_samples
+
+    travel = travel_from_samples({"handle": [(0, 0, 1.0), (0, 0, 0.5), (0, 0, 0.0)]}, ppb=100)
+    assert travel.slide_v == -100.0 and travel.slide_u == 0.0

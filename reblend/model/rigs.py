@@ -28,6 +28,9 @@ __all__ = [
     "clear_turntable_driver",
     "apply_state_table",
     "clear_state_table",
+    "split_actions",
+    "revalidate_drivers",
+    "blocks_of",
     "ensure_value_property",
     "read_channel_value",
 ]
@@ -76,6 +79,7 @@ def apply_state_table(table: state_tables.StateTable) -> int:
     """
     keys = table.compile()
     touched: set[tuple[str, str, str, int]] = set()
+    split_actions(table)
 
     for key in keys:
         block = _resolve_block(key.id_type, key.target)
@@ -94,6 +98,88 @@ def apply_state_table(table: state_tables.StateTable) -> int:
         block, data_path = _hop_embedded(block, data_path)
         pruned += _finish_channel(block, data_path, index, table.frames)
     return pruned
+
+
+def split_actions(table: state_tables.StateTable) -> list[str]:
+    """Give every datablock the table keys its own action (Skou feedback
+    #22/#34).
+
+    A duplicated object or a copied material keeps the original's action, so
+    keying the copy rewrites (and prunes) the original's keys. Any action with
+    more than one real user is copied first, so this table only ever touches
+    keys that belong to it. Returns the names of the blocks that were split.
+    """
+    split: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for id_type, target, data_path, _index in table.channels():
+        try:
+            block = _resolve_block(id_type, target)
+            block, _path = _hop_embedded(block, data_path)
+        except KeyError:
+            continue  # compile/apply reports the dead path properly
+        ident = (type(block).__name__, block.name_full)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        anim = block.animation_data
+        action = anim.action if anim is not None else None
+        if action is None or _real_users(action) <= 1:
+            continue
+        slot = getattr(anim, "action_slot", None)
+        anim.action = action.copy()
+        if slot is not None and getattr(anim, "action_slot", None) is None:
+            # 4.4+ slotted actions: keep the same slot in the copy.
+            match = anim.action.slots.get(slot.identifier) if hasattr(anim.action, "slots") else None
+            if match is not None:
+                anim.action_slot = match
+        split.append(block.name)
+    return split
+
+
+def revalidate_drivers(blocks) -> list[str]:
+    """Clear Blender's "invalid driver" flag on the given datablocks (and the
+    node trees they own) so drivers re-evaluate (Skou feedback #6).
+
+    After ``material.copy()`` and retargeting a driver variable, Blender keeps
+    the driver marked invalid until it is told to try again; the driver is
+    fine, Blender just stopped evaluating it. Returns "block: path" for each
+    driver that was re-enabled.
+    """
+    fixed: list[str] = []
+    seen: set[int] = set()
+    queue = list(blocks)
+    while queue:
+        block = queue.pop()
+        if block is None or id(block) in seen:
+            continue
+        seen.add(id(block))
+        tree = getattr(block, "node_tree", None)
+        if tree is not None:
+            queue.append(tree)
+        anim = getattr(block, "animation_data", None)
+        if anim is None:
+            continue
+        for fcurve in anim.drivers:
+            if not fcurve.driver.is_valid:
+                fcurve.driver.is_valid = True
+                fcurve.driver.expression = fcurve.driver.expression  # re-tag
+                fixed.append(f"{block.name}: {fcurve.data_path}")
+    return fixed
+
+
+def blocks_of(table: state_tables.StateTable) -> list:
+    """Every live datablock a state table's channels address."""
+    found = []
+    for id_type, target, _path, _index in table.channels():
+        try:
+            found.append(_resolve_block(id_type, target))
+        except KeyError:
+            continue
+    return found
+
+
+def _real_users(action) -> int:
+    return action.users - (1 if action.use_fake_user else 0)
 
 
 def clear_state_table(table: state_tables.StateTable) -> int:

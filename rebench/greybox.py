@@ -48,6 +48,7 @@ DEFAULT_SIZES = {
     kinds.KNOB: (120, 120),
     kinds.BUTTON_TOGGLE: (100, 100),
     kinds.BUTTON_MOMENTARY: (100, 100),
+    kinds.BUTTON_RADIO: (100, 100),
     kinds.BUTTON_UPDOWN: (60, 100),
     kinds.FADER_HANDLE: (60, 240),
     kinds.SELECTOR: (60, 240),
@@ -235,7 +236,8 @@ def _draw(sheet: _Sheet) -> Canvas:
             frame = _knob(w, h, f, n, sheet.shape)
         elif sheet.kind in (kinds.FADER_HANDLE, kinds.SELECTOR) and sheet.widget == "sequence_fader":
             frame = _fader(w, h, f, n)
-        elif sheet.kind in (kinds.BUTTON_TOGGLE, kinds.BUTTON_MOMENTARY, kinds.BUTTON_UPDOWN):
+        elif sheet.kind in (kinds.BUTTON_TOGGLE, kinds.BUTTON_MOMENTARY, kinds.BUTTON_RADIO,
+                            kinds.BUTTON_UPDOWN):
             frame = _button(w, h, f, n)
         elif sheet.kind == kinds.LAMP:
             frame = _lamp(w, h, f, n)

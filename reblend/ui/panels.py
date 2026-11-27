@@ -12,12 +12,14 @@ import bpy
 
 from ..model import kinds, schema, state_tables
 from ..project import merge, reporting
+from . import operators
 
 _SEVERITY_ICONS = {"error": "CANCEL", "warning": "ERROR"}  # ERROR = the ⚠ icon
 _KIND_ICONS = {
     "knob": "MESH_CIRCLE",
     "button_toggle": "CHECKBOX_HLT",
     "button_momentary": "RADIOBUT_ON",
+    "button_radio": "RADIOBUT_OFF",
     "button_updown": "SORT_ASC",
     "fader_handle": "ARROW_LEFTRIGHT",
     "selector": "LINENUMBERS_ON",
@@ -208,6 +210,11 @@ class REBLEND_PT_active(bpy.types.Panel):
         # The backdrop *is* the plate other elements drop shadows onto, so it
         # has no plate of its own to choose between — the question only makes
         # sense for art that sits on top of one.
+        if kinds.renders_art(data.kind) and "re_samples" in active:
+            row = layout.row(align=True)
+            row.prop(active, '["re_samples"]', text="Samples (0 = scene)")
+            if data.kind not in (kinds.BACKDROP, kinds.DISPLAY) and "re_full_bleed" in active:
+                row.prop(active, '["re_full_bleed"]', text="Full Bleed")
         if kinds.renders_art(data.kind) and data.kind != kinds.BACKDROP:
             layout.prop(settings, "active_shadow_owner")
             if (data.shadow_owner == kinds.SHADOW_ELEMENT
@@ -445,11 +452,39 @@ class REBLEND_PT_render(bpy.types.Panel):
             warn = layout.row()
             warn.alert = True
             warn.label(text="Cast Shadows needs Cycles", icon="ERROR")
+        if settings.inactive_render == "SHADOW":
+            layout.prop(settings, "caster_bounce")
+        layout.prop(settings, "panel_isolation")
+        layout.prop(settings, "alpha_floor")
         col = layout.column(align=True)
         col.operator("reblend.render_elements", text="Render All Sheets",
                      icon="RENDER_ANIMATION").scope = "ALL"
         col.operator("reblend.render_elements", text="Render Active Sheet",
                      icon="RENDER_STILL").scope = "ACTIVE"
+
+        box = layout.box()
+        box.label(text="In a background Blender (keeps this one usable)")
+        if operators.background_running():
+            if hasattr(box, "progress"):
+                box.progress(factor=settings.render_progress / 100.0,
+                             text=settings.render_message or "rendering")
+            else:
+                box.label(text=f"{settings.render_progress:.0f} % {settings.render_message}")
+            box.operator("reblend.cancel_background_render", icon="CANCEL")
+        else:
+            row = box.row(align=True)
+            row.operator("reblend.render_background", text="Changed",
+                         icon="FILE_REFRESH").scope = "DIRTY"
+            row.operator("reblend.render_background", text="All",
+                         icon="RENDER_ANIMATION").scope = "ALL"
+            row.operator("reblend.render_background", text="Active",
+                         icon="RENDER_STILL").scope = "ACTIVE"
+        if settings.render_state != "IDLE":
+            icon = {"DONE": "CHECKMARK", "FAILED": "ERROR", "CANCELLED": "CANCEL",
+                    "RUNNING": "TIME"}.get(settings.render_state, "INFO")
+            when = f" · {settings.render_finished}" if settings.render_finished else ""
+            layout.label(text=f"{settings.render_state.title()}: "
+                              f"{settings.render_message}{when}", icon=icon)
 
 
 class REBLEND_PT_render_report(bpy.types.Panel):
@@ -501,8 +536,12 @@ class REBLEND_PT_validation(bpy.types.Panel):
             return
 
         if settings.findings_time:
-            layout.label(text=f"Validated {settings.findings_time}",
-                         icon="INFO")
+            age = reporting.age_text(settings.findings_time)
+            row = layout.row()
+            stale = reporting.is_stale(settings.findings_time)
+            row.alert = stale
+            row.label(text=f"Validated {age}" + (" — validate again" if stale else ""),
+                      icon="ERROR" if stale else "INFO")
         _draw_findings(layout, findings)
         layout.operator("reblend.save_report", text="Save Validation Report…",
                         icon="FILE_TICK").source = "VALIDATION"
@@ -654,7 +693,7 @@ class REBLEND_PT_sync(bpy.types.Panel):
                 row = box.row(align=True)
                 row.label(text=f"{item.path} · {item.status}",
                           icon=_STATUS_ICONS.get(item.status, "QUESTION"))
-                row.prop(item, "resolution", text="")
+                row.prop(item, "resolution_ui", text="")
                 for line in reporting.wrap_text(item.summary):
                     box.label(text=line)
             layout.operator("reblend.apply_sync", icon="CHECKMARK")

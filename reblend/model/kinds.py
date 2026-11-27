@@ -38,6 +38,7 @@ __all__ = [
     "KNOB",
     "BUTTON_TOGGLE",
     "BUTTON_MOMENTARY",
+    "BUTTON_RADIO",
     "BUTTON_UPDOWN",
     "FADER_HANDLE",
     "SELECTOR",
@@ -69,6 +70,10 @@ __all__ = [
 KNOB = "knob"
 BUTTON_TOGGLE = "button_toggle"
 BUTTON_MOMENTARY = "button_momentary"
+#: ``radio_button``: two frames like a momentary, but the frames mean
+#: "not selected" / "selected", and a group of them shares one property with
+#: one widget per ``index`` (Skou feedback #36).
+BUTTON_RADIO = "button_radio"
 BUTTON_UPDOWN = "button_updown"
 FADER_HANDLE = "fader_handle"
 SELECTOR = "selector"
@@ -84,6 +89,7 @@ ALL_KINDS = (
     KNOB,
     BUTTON_TOGGLE,
     BUTTON_MOMENTARY,
+    BUTTON_RADIO,
     BUTTON_UPDOWN,
     FADER_HANDLE,
     SELECTOR,
@@ -104,6 +110,7 @@ _RIGS = {
     KNOB: RIG_DRIVER,
     BUTTON_TOGGLE: RIG_STATES,
     BUTTON_MOMENTARY: RIG_STATES,
+    BUTTON_RADIO: RIG_STATES,
     BUTTON_UPDOWN: RIG_STATES,
     FADER_HANDLE: RIG_STATES,
     SELECTOR: RIG_STATES,
@@ -127,12 +134,13 @@ WIDGET_KINDS = {
     "pitch_wheel": KNOB,
     "toggle_button": BUTTON_TOGGLE,
     "momentary_button": BUTTON_MOMENTARY,
-    # step_button and radio_button are *not* selectors: both use the same
-    # two-frame released/held animation as a momentary button, whatever the
-    # bound property's step count. A radio group of N values is N separate
-    # two-frame widgets, one per `index`, not one N-frame sheet.
+    # step_button and radio_button are *not* selectors: both have two frames,
+    # whatever the bound property's step count. A step_button animates
+    # released/held like a momentary; a radio_button shows not-selected /
+    # selected, and a radio group of N values is N separate two-frame
+    # widgets, one per `index`, not one N-frame sheet.
     "step_button": BUTTON_MOMENTARY,
-    "radio_button": BUTTON_MOMENTARY,
+    "radio_button": BUTTON_RADIO,
     "up_down_button": BUTTON_UPDOWN,
     "sequence_fader": FADER_HANDLE,
     "sequence_meter": LAMP,
@@ -206,7 +214,7 @@ WIDGET_FRAME_RULES = {
     ),
     "radio_button": FrameRule(
         (2,),
-        note="released, held — one widget per value via `index`, "
+        note="released (unchecked), held (checked) — one widget per value via `index`, "
         "not one frame per value",
     ),
     "up_down_button": FrameRule((3,), note="neutral, up-held, down-held"),

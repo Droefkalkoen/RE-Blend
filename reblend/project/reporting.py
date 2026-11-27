@@ -171,3 +171,40 @@ def merge_json(items: Iterable[Any], *, project_root: str = "",
         ],
     }
     return json.dumps(doc, indent=2) + "\n"
+
+
+#: A stored report older than this is shown as stale (Skou feedback #7).
+STALE_AFTER_S = 60 * 60
+
+
+def _parse_stamp(stamp: str):
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def age_text(stamp: str, now=None) -> str:
+    """'just now', '5 min ago', '3 h ago', '12 days ago' or the stamp itself."""
+    from datetime import datetime
+
+    then = _parse_stamp(stamp)
+    if then is None:
+        return stamp
+    seconds = ((now or datetime.now()) - then).total_seconds()
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400 * 2:
+        return f"{int(seconds // 3600)} h ago"
+    return f"{int(seconds // 86400)} days ago ({stamp})"
+
+
+def is_stale(stamp: str, now=None) -> bool:
+    from datetime import datetime
+
+    then = _parse_stamp(stamp)
+    return then is None or ((now or datetime.now()) - then).total_seconds() > STALE_AFTER_S

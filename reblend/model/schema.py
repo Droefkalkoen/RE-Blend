@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 #: Current schema version. Bump on any property change and add a migration.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: Property names and their defaults at the current schema version.
 DEFAULTS: dict[str, Any] = {
@@ -63,6 +63,11 @@ DEFAULTS: dict[str, Any] = {
     "re_preview_frame": 0,    # frame shown in the panel preview (§5.3)
     #: Who owns this element's cast shadow (§5.1) — one of kinds.SHADOW_OWNERS.
     "re_shadow_owner": kinds.SHADOW_BACKGROUND,
+    #: The art fills its frame edge to edge by design (a display window, a
+    #: full-bleed plate), so alpha at the border is not reported (#10).
+    "re_full_bleed": False,
+    #: Cycles samples for this element's render; 0 = the scene's (#14).
+    "re_samples": 0,
 }
 
 
@@ -93,6 +98,12 @@ class Travel:
 
     across: float = 0.0
     depth: float = 0.0
+    #: Net in-plane movement from the first frame to the last, of the object
+    #: that travels furthest, in panel px: ``slide_u`` to the right and
+    #: ``slide_v`` upwards as the render camera sees it. A sequence_fader's
+    #: handle must start leftmost / at the bottom (Skou feedback #8).
+    slide_u: float = 0.0
+    slide_v: float = 0.0
 
     @property
     def moves(self) -> bool:
@@ -141,6 +152,10 @@ class ElementData:
     #: evaluated frame by frame to know, so headless callers and tests leave
     #: it unset and the checks that need it stay quiet.
     frame_travel: "Travel | None" = None
+    #: ``re_full_bleed``: alpha at the frame border is the design (#10).
+    full_bleed: bool = False
+    #: ``re_samples``: per-element Cycles samples, 0 = the scene's (#14).
+    samples: int = 0
 
     def __post_init__(self) -> None:
         if not self.shadow_owner:
@@ -249,6 +264,14 @@ def _add_rotor(props: MutableMapping[str, Any]) -> None:
         props["re_rotor"] = ""
 
 
+@_migration(4)
+def _add_full_bleed_and_samples(props: MutableMapping[str, Any]) -> None:
+    """v4 → v5: ``re_full_bleed`` and ``re_samples`` join the schema, both
+    off by default, so existing files render exactly as before."""
+    props.setdefault("re_full_bleed", False)
+    props.setdefault("re_samples", 0)
+
+
 def migrate(props: MutableMapping[str, Any]) -> bool:
     """Bring an element's properties up to :data:`SCHEMA_VERSION` in place.
 
@@ -295,6 +318,8 @@ def data_to_props(data: ElementData) -> dict[str, Any]:
         ),
         re_shadow_owner=data.shadow_owner,
         re_rotor=data.rotor or "",
+        re_full_bleed=bool(data.full_bleed),
+        re_samples=int(data.samples),
     )
     return props
 
@@ -340,4 +365,6 @@ def props_to_data(props: MutableMapping[str, Any]) -> ElementData:
         states=str(working.get("re_states", "")),
         shadow_owner=str(working.get("re_shadow_owner", "")),
         rotor=str(working.get("re_rotor", "")),
+        full_bleed=bool(working.get("re_full_bleed", False)),
+        samples=int(working.get("re_samples", 0)),
     )

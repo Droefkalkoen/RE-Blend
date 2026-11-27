@@ -152,3 +152,18 @@ def test_wrap_text_respects_width_and_keeps_long_words_whole():
     assert reporting.wrap_text("supercalifragilistic", width=5) == [
         "supercalifragilistic"]
     assert reporting.wrap_text("") == []
+
+
+def test_age_text_and_staleness():
+    from datetime import datetime
+
+    from reblend.project.reporting import age_text, is_stale
+
+    now = datetime(2026, 11, 27, 12, 0, 0)
+    assert age_text("2026-11-27 11:59:30", now) == "just now"
+    assert age_text("2026-11-27 11:50:00", now) == "10 min ago"
+    assert age_text("2026-11-27 09:00:00", now) == "3 h ago"
+    assert age_text("2026-08-01 09:00:00", now).startswith("118 days ago")
+    assert not is_stale("2026-11-27 11:50:00", now)
+    assert is_stale("2026-11-27 09:00:00", now)
+    assert is_stale("garbage", now)

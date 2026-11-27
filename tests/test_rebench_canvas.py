@@ -42,7 +42,7 @@ def test_sidecar_round_trips(tmp_path):
          "size_px": 48},
     ])
     data = json.loads((root / "GUI2D" / "rebench.json").read_text())
-    assert data["version"] == 1
+    assert data["version"] == 2
     side = Sidecar.load(root)
     assert side.sprites["Knob"].frame_w == 120
     assert side.label("l1").text == "GAIN"

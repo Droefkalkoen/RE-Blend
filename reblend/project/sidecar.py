@@ -10,6 +10,11 @@ Positions never live here; ``device_2D.lua`` owns them. The sidecar holds:
   and an optional blockout ``shape`` for the grey-box and Blender handoff;
 - ``labels``: panel text (silk) with its size in hi-res px, so legibility can
   be checked before any art exists;
+- ``sprites[path].derive_from`` / ``crop``: a *derived sheet* (Skou feedback
+  #38), cut from another sprite's frames instead of rendered on its own. The
+  folded On/Off/Bypass fader is the front fader's sheet with every frame
+  cropped to ``[x, y, w, h]`` (frame px) so it fits the 150 px folded strip.
+  RE-Blend renders the source and writes the derived sheet beside it;
 - ``greybox``: sprite path -> SHA-256 of the ``rebench greybox`` placeholder
   written there. A PNG is redrawn only while its bytes still match, so a
   render from RE-Blend (or any other edit) is never overwritten.
@@ -28,7 +33,8 @@ from pathlib import Path
 __all__ = ["SIDECAR_FILENAME", "SCHEMA_VERSION", "Label", "SpriteInfo", "Sidecar"]
 
 SIDECAR_FILENAME = "rebench.json"
-SCHEMA_VERSION = 1
+#: v2 adds ``derive_from`` / ``crop`` on sprites. v1 files read unchanged.
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -36,6 +42,18 @@ class SpriteInfo:
     frame_w: int = 0
     frame_h: int = 0
     shape: dict = field(default_factory=dict)
+    #: Sprite path this sheet is cut from ("" = rendered on its own).
+    derive_from: str = ""
+    #: ``[x, y, w, h]`` in the source's frame px; the derived frame size is
+    #: ``w x h``. Empty means the whole source frame.
+    crop: list = field(default_factory=list)
+
+    def derived_rect(self, source_w: int, source_h: int) -> tuple[int, int, int, int]:
+        """The crop rectangle, defaulting to the full source frame."""
+        if len(self.crop) == 4:
+            x, y, w, h = (int(v) for v in self.crop)
+            return x, y, w, h
+        return 0, 0, int(source_w), int(source_h)
 
 
 @dataclass
@@ -88,7 +106,7 @@ class Sidecar:
     def to_dict(self) -> dict:
         return {
             "version": self.version,
-            "sprites": {k: asdict(v) for k, v in sorted(self.sprites.items())},
+            "sprites": {k: _sprite_dict(v) for k, v in sorted(self.sprites.items())},
             "labels": [asdict(label) for label in self.labels],
             "greybox": dict(sorted(self.greybox.items())),
         }
@@ -110,6 +128,17 @@ class Sidecar:
     @property
     def empty(self) -> bool:
         return not self.sprites and not self.labels and not self.greybox
+
+
+def _sprite_dict(info: SpriteInfo) -> dict:
+    """A sprite entry without the empty derived-sheet keys, so files that
+    use no derived sheets keep their v1 shape."""
+    raw = asdict(info)
+    if not raw["derive_from"]:
+        raw.pop("derive_from")
+    if not raw["crop"]:
+        raw.pop("crop")
+    return raw
 
 
 def _known(kind, raw: dict) -> dict:

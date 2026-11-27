@@ -1,0 +1,101 @@
+"""Regression tests for the Skou feedback bugs that need a live Blender."""
+
+import numpy as np
+import pytest
+
+bpy = pytest.importorskip("bpy")
+
+from reblend.model import rigs  # noqa: E402
+from reblend.model.state_tables import State, StateTable, location  # noqa: E402
+from reblend.ui import operators, props  # noqa: E402
+
+
+def test_preview_image_refills_after_save(tmp_path):
+    """#2: a saved (file-backed) preview image is recreated, not refilled."""
+    pixels = np.zeros((20, 30, 4), dtype=np.float32)
+    image = operators._show_image(bpy.context, "RE Preview front", pixels)
+    image.filepath_raw = str(tmp_path / "preview.png")
+    image.file_format = "PNG"
+    image.save()
+    pixels[..., 3] = 1.0
+    again = operators._show_image(bpy.context, "RE Preview front", pixels)
+    assert again.source == "GENERATED"
+    assert len(again.pixels) == 20 * 30 * 4
+
+
+def test_merge_resolution_is_scriptable(imported):
+    """#4: a script can read and set every diff row's choice."""
+    from reblend.project import merge
+
+    settings = bpy.context.scene.reblend
+    props.store_merge_items(settings, [
+        merge.MergeItem("a", merge.CHANGED, "moved"),
+        merge.MergeItem("b", merge.REMOVED, "gone"),
+    ])
+    rows = {row.path: row for row in settings.merge_items}
+    assert rows["a"].resolution == "THEIRS"
+    assert rows["b"].resolution == "MINE"
+    rows["a"].resolution = "MINE"
+    rows["b"].resolution = "DELETE"
+    assert rows["a"].resolution_ui == "MINE"
+    assert rows["b"].resolution_ui == "DELETE"
+    # Re-running the diff keeps the choices made.
+    props.store_merge_items(settings, [merge.MergeItem("a", merge.CHANGED, "moved")])
+    assert settings.merge_items[0].resolution == "MINE"
+
+
+def test_apply_sync_refuses_unknown_choice(imported):
+    from reblend.project import merge
+
+    settings = bpy.context.scene.reblend
+    props.store_merge_items(settings, [merge.MergeItem("a", merge.CHANGED, "moved")])
+    settings.merge_items[0].resolution = "BOTH"
+    with pytest.raises(RuntimeError, match="unknown choice"):
+        bpy.ops.reblend.apply_sync("EXEC_DEFAULT")
+
+
+def _keyed_object(name):
+    obj = bpy.data.objects.new(name, None)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def test_generate_rig_does_not_rewrite_a_copy_s_original():
+    """#22/#34: keying a copy that shares the original's action leaves the
+    original's keys alone."""
+    original = _keyed_object("dim_key")
+    original.location = (0, 0, 0)
+    original.keyframe_insert("location", index=2, frame=0)
+    original.location = (0, 0, -1)
+    original.keyframe_insert("location", index=2, frame=1)
+    copy = _keyed_object("pol_key")
+    copy.animation_data_create()
+    copy.animation_data.action = original.animation_data.action
+    if hasattr(original.animation_data, "action_slot"):
+        copy.animation_data.action_slot = original.animation_data.action_slot
+
+    table = StateTable(states=[
+        State("off", (location("pol_key", axis=2, value=0.5),)),
+        State("on", (location("pol_key", axis=2, value=0.7),)),
+        State("x", (location("pol_key", axis=2, value=0.9),)),
+    ])
+    rigs.apply_state_table(table)
+
+    assert copy.animation_data.action != original.animation_data.action
+    scene = bpy.context.scene
+    scene.frame_set(1)
+    assert original.location.z == pytest.approx(-1.0)
+    assert copy.location.z == pytest.approx(0.7)
+    scene.frame_set(2)
+    assert copy.location.z == pytest.approx(0.9)
+
+
+def test_revalidate_drivers_reenables_invalid_ones():
+    """#6: a driver Blender marked invalid is re-enabled."""
+    obj = _keyed_object("lamp")
+    fcurve = obj.driver_add("location", 0)
+    fcurve.driver.expression = "1.0"
+    fcurve.driver.is_valid = False
+    fixed = rigs.revalidate_drivers([obj])
+    assert fixed == ["lamp: location"]
+    assert fcurve.driver.is_valid

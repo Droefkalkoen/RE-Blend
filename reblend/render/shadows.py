@@ -121,10 +121,15 @@ def travel_from_samples(
     whichever component happens to be larger.
     """
     across = depth = 0.0
+    slide = (0.0, 0.0)
     for samples in per_object.values():
         if len(samples) < 2:
             continue
         spans = [max(values) - min(values) for values in zip(*samples)]
         depth = max(depth, spans[0] * ppb)
-        across = max(across, math.hypot(spans[1], spans[2]) * ppb)
-    return Travel(across=across, depth=depth)
+        reach = math.hypot(spans[1], spans[2]) * ppb
+        if reach > across:
+            across = reach
+            first, last = samples[0], samples[-1]
+            slide = ((last[1] - first[1]) * ppb, (last[2] - first[2]) * ppb)
+    return Travel(across=across, depth=depth, slide_u=slide[0], slide_v=slide[1])

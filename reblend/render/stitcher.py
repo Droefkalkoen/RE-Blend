@@ -16,7 +16,8 @@ from typing import Sequence
 
 import numpy as np
 
-__all__ = ["StitchError", "stitch", "unpremultiply", "split_strip", "frame_height"]
+__all__ = ["StitchError", "stitch", "unpremultiply", "split_strip", "frame_height",
+           "crop_frames", "alpha_floor"]
 
 
 class StitchError(Exception):
@@ -74,4 +75,36 @@ def unpremultiply(pixels: np.ndarray) -> np.ndarray:
     out = pixels.copy()
     np.divide(pixels[..., :3], alpha, out=out[..., :3], where=alpha > 0.0)
     np.clip(out[..., :3], 0.0, 1.0, out=out[..., :3])
+    return out
+
+
+def crop_frames(frames: Sequence[np.ndarray], rect: tuple[int, int, int, int]
+                ) -> list[np.ndarray]:
+    """Cut the same ``(x, y, w, h)`` rectangle out of every frame (a derived
+    sheet, Skou feedback #38). Refuses a rectangle outside the frame."""
+    x, y, w, h = (int(v) for v in rect)
+    if not frames:
+        raise StitchError("no frames to crop")
+    fh, fw = frames[0].shape[0], frames[0].shape[1]
+    if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > fw or y + h > fh:
+        raise StitchError(f"crop {[x, y, w, h]} does not fit inside a {fw}x{fh} frame")
+    return [np.ascontiguousarray(f[y:y + h, x:x + w]) for f in frames]
+
+
+def alpha_floor(pixels: np.ndarray, floor: float) -> np.ndarray:
+    """Remove a faint alpha haze: coverage below ``floor`` becomes 0 and the
+    rest is stretched back to 0..1 (Skou feedback #19).
+
+    A shadow catcher picks up 2 to 6 % alpha from ambient occlusion across the
+    whole frame, so the sheet's rectangle shows as a faint edge on the panel.
+    Straight alpha means colour is untouched; only coverage changes.
+    """
+    if floor <= 0.0:
+        return pixels
+    if floor >= 1.0:
+        raise StitchError("alpha floor must be below 1")
+    out = np.array(pixels, dtype=np.float32, copy=True)
+    alpha = out[..., 3]
+    alpha[:] = np.clip((alpha - floor) / (1.0 - floor), 0.0, 1.0)
+    out[..., :3][alpha <= 0.0] = 0.0
     return out
