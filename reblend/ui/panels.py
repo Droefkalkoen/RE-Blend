@@ -202,6 +202,10 @@ class REBLEND_PT_active(bpy.types.Panel):
         # through and refits the guide boxes. Nothing to resync here — a
         # draw() may not write state, dict-style assignment included.
         settings = context.scene.reblend
+        if operators.LIVE_OVERLAP["element"] == active.name and operators.LIVE_OVERLAP["message"]:
+            warn = layout.row()
+            warn.alert = True
+            warn.label(text=operators.LIVE_OVERLAP["message"], icon="ERROR")
         row = layout.row(align=True)
         row.prop(settings, "active_frame_w", text="Frame W")
         row.prop(settings, "active_frame_h", text="Frame H")
@@ -215,6 +219,15 @@ class REBLEND_PT_active(bpy.types.Panel):
             row.prop(active, '["re_samples"]', text="Samples (0 = scene)")
             if data.kind not in (kinds.BACKDROP, kinds.DISPLAY) and "re_full_bleed" in active:
                 row.prop(active, '["re_full_bleed"]', text="Full Bleed")
+        if kinds.renders_art(data.kind):
+            variants = operators.element_variants(active)
+            row = layout.row(align=True)
+            for child in variants:
+                name = child["re_variant"]
+                row.operator("reblend.use_variant", text=name,
+                             depress=active.get("re_variant") == name).name = name
+            row.operator("reblend.add_variant", text="" if variants else "Add Art Variant",
+                         icon="ADD")
         if kinds.renders_art(data.kind) and "re_emission_pass" in active:
             layout.prop(active, '["re_emission_pass"]',
                         text="Emission Pass (Design/emission/)")
@@ -511,6 +524,7 @@ class REBLEND_PT_kit(bpy.types.Panel):
         row = layout.row(align=True)
         row.prop(settings, "material_starter", text="")
         row.operator("reblend.add_material_starter", text="Add", icon="MATERIAL")
+        layout.operator("reblend.add_touch_point", icon="BRUSH_DATA")
         layout.prop(settings, "rig_template")
         row = layout.row(align=True)
         row.operator("reblend.add_lighting_rig", icon="LIGHT_AREA")
@@ -646,6 +660,7 @@ class REBLEND_PT_preview(bpy.types.Panel):
         settings = context.scene.reblend
         row = layout.row(align=True)
         row.prop(settings, "preview_panel", text="")
+        row.prop(settings, "preview_half", toggle=True)
         row.operator("reblend.preview_panel", text="Preview", icon="RENDERLAYERS")
 
         playable = []

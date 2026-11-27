@@ -25,9 +25,10 @@ from mathutils import Vector
 from . import calibration
 
 __all__ = ["STARTERS", "palette_group", "material_starter", "lighting_rig",
-           "RIG_COLLECTION", "PALETTE_GROUP"]
+           "touch_point_group", "RIG_COLLECTION", "PALETTE_GROUP", "TOUCH_GROUP"]
 
 PALETTE_GROUP = "RE Palette"
+TOUCH_GROUP = "RE Touch Point"
 RIG_COLLECTION = "RE Lighting Rig"
 
 #: key -> (label, description). Defaults live in the builders below.
@@ -204,6 +205,104 @@ def material_starter(key: str, name: str | None = None) -> bpy.types.Material:
     material.node_tree.links.new(node.outputs["Shader"], out.inputs["Surface"])
     material["re_starter"] = key
     return material
+
+
+# --- wear / touch points (Skou feedback #21) ----------------------------------
+
+def touch_point_group() -> bpy.types.ShaderNodeTree:
+    """``RE Touch Point``: texture coordinates made unique per object.
+
+    Wear textures mapped in object space repeat across symmetric touch points
+    (mirrored jacks got the same smudge). This group offsets and turns the
+    object coordinates by the object's own random number (Object Info), mixed
+    with a Seed input, and gives a Variant index for picking one of N
+    textures. Put it between Texture Coordinate and the wear texture.
+    """
+    for group in bpy.data.node_groups:
+        if group.get("re_touch_point"):
+            return group
+    group = bpy.data.node_groups.new(TOUCH_GROUP, "ShaderNodeTree")
+    iface = group.interface
+    iface.new_socket("Vector", in_out="OUTPUT", socket_type="NodeSocketVector")
+    iface.new_socket("Variant", in_out="OUTPUT", socket_type="NodeSocketFloat")
+    iface.new_socket("Random", in_out="OUTPUT", socket_type="NodeSocketFloat")
+    seed = iface.new_socket("Seed", in_out="INPUT", socket_type="NodeSocketFloat")
+    seed.default_value = 0.0
+    spread = iface.new_socket("Offset", in_out="INPUT", socket_type="NodeSocketFloat")
+    spread.default_value = 10.0
+    count = iface.new_socket("Variants", in_out="INPUT", socket_type="NodeSocketFloat")
+    count.default_value = 3.0
+    count.min_value, count.max_value = 1.0, 64.0
+    nodes, link = group.nodes, group.links.new
+    gin = nodes.new("NodeGroupInput")
+    gin.location = (-900, 0)
+    gout = nodes.new("NodeGroupOutput")
+    gout.location = (600, 0)
+    info = nodes.new("ShaderNodeObjectInfo")
+    info.location = (-900, 300)
+    coords = nodes.new("ShaderNodeTexCoord")
+    coords.location = (-900, -300)
+    # r = fract(random + seed * golden ratio): the per-object number.
+    mix = nodes.new("ShaderNodeMath")
+    mix.operation = "MULTIPLY_ADD"
+    mix.inputs[1].default_value = 0.6180339887
+    mix.location = (-650, 200)
+    link(gin.outputs["Seed"], mix.inputs[0])
+    link(info.outputs["Random"], mix.inputs[2])
+    r = nodes.new("ShaderNodeMath")
+    r.operation = "FRACT"
+    r.location = (-450, 200)
+    link(mix.outputs[0], r.inputs[0])
+    # Offset: (r, fract(r * 7.13), 0) * Offset.
+    r2 = nodes.new("ShaderNodeMath")
+    r2.operation = "MULTIPLY"
+    r2.inputs[1].default_value = 7.13
+    r2.location = (-450, 0)
+    link(r.outputs[0], r2.inputs[0])
+    r2f = nodes.new("ShaderNodeMath")
+    r2f.operation = "FRACT"
+    r2f.location = (-300, 0)
+    link(r2.outputs[0], r2f.inputs[0])
+    xyz = nodes.new("ShaderNodeCombineXYZ")
+    xyz.location = (-150, 100)
+    link(r.outputs[0], xyz.inputs["X"])
+    link(r2f.outputs[0], xyz.inputs["Y"])
+    scaled = nodes.new("ShaderNodeVectorMath")
+    scaled.operation = "SCALE"
+    scaled.location = (50, 100)
+    link(xyz.outputs[0], scaled.inputs[0])
+    link(gin.outputs["Offset"], scaled.inputs["Scale"])
+    # Turn about Z by r * 2 pi, then offset.
+    angle = nodes.new("ShaderNodeMath")
+    angle.operation = "MULTIPLY"
+    angle.inputs[1].default_value = 2.0 * math.pi
+    angle.location = (-300, -200)
+    link(r.outputs[0], angle.inputs[0])
+    turn = nodes.new("ShaderNodeVectorRotate")
+    turn.rotation_type = "Z_AXIS"
+    turn.location = (50, -200)
+    link(coords.outputs["Object"], turn.inputs["Vector"])
+    link(angle.outputs[0], turn.inputs["Angle"])
+    add = nodes.new("ShaderNodeVectorMath")
+    add.operation = "ADD"
+    add.location = (300, 0)
+    link(turn.outputs[0], add.inputs[0])
+    link(scaled.outputs[0], add.inputs[1])
+    link(add.outputs[0], gout.inputs["Vector"])
+    # Variant = floor(r * Variants).
+    pick = nodes.new("ShaderNodeMath")
+    pick.operation = "MULTIPLY"
+    pick.location = (50, 350)
+    link(r.outputs[0], pick.inputs[0])
+    link(gin.outputs["Variants"], pick.inputs[1])
+    floor = nodes.new("ShaderNodeMath")
+    floor.operation = "FLOOR"
+    floor.location = (300, 350)
+    link(pick.outputs[0], floor.inputs[0])
+    link(floor.outputs[0], gout.inputs["Variant"])
+    link(r.outputs[0], gout.inputs["Random"])
+    group["re_touch_point"] = True
+    return group
 
 
 # --- lighting rig ----------------------------------------------------------

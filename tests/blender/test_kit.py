@@ -61,3 +61,16 @@ def test_lighting_rig_lights_the_panel_from_the_viewer_side(empty_scene, tmp_pat
     assert bpy.ops.reblend.add_lighting_rig("EXEC_DEFAULT") == {"FINISHED"}
     assert {o.name for o in bpy.data.collections["RE Lighting Rig"].objects} == {
         "RE Key", "RE Fill", "RE Rim"}
+
+
+def test_touch_point_gives_mirrored_objects_different_coordinates(empty_scene):
+    from reblend.model import kit
+
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    cube.data.materials.append(kit.material_starter("PLASTIC"))
+    assert bpy.ops.reblend.add_touch_point("EXEC_DEFAULT") == {"FINISHED"}
+    nodes = cube.active_material.node_tree.nodes
+    node = next(n for n in nodes if n.type == "GROUP" and n.node_tree.get("re_touch_point"))
+    assert {"Vector", "Variant", "Random"} <= set(node.outputs.keys())
+    assert kit.touch_point_group() is node.node_tree   # built once

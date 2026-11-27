@@ -95,6 +95,22 @@ def composite_panel(
     return canvas
 
 
+def half_size(canvas: np.ndarray) -> np.ndarray:
+    """A 2x2 box downscale in premultiplied space: roughly what the 0.5x asset
+    set looks like (RE2DRender makes the real one; this is only a preview).
+    An odd last row or column is dropped."""
+    h, w = canvas.shape[0] // 2 * 2, canvas.shape[1] // 2 * 2
+    c = canvas[:h, :w].astype(np.float32)
+    pre = c.copy()
+    pre[..., :3] *= c[..., 3:4]
+    small = pre.reshape(h // 2, 2, w // 2, 2, 4).mean(axis=(1, 3))
+    alpha = small[..., 3:4]
+    out = small.copy()
+    out[..., :3] = np.divide(small[..., :3], alpha, out=np.zeros_like(small[..., :3]),
+                             where=alpha > 0)
+    return out
+
+
 def contact_sheet(
     strip: np.ndarray, frame_h: int, columns: int = 0, gap: int = 4
 ) -> np.ndarray:

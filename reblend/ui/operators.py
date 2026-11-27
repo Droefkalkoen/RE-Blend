@@ -3234,6 +3234,8 @@ class REBLEND_OT_preview_panel(bpy.types.Operator):
 
         size = calibration.panel_size_px(panel, settings.rack_units)
         canvas = compositor.composite_panel(size.width, size.height, layers)
+        if settings.preview_half:
+            canvas = compositor.half_size(canvas)
         image = _show_image(context, f"RE Preview {panel}", canvas)
 
         message = f"composited {len(layers)} layer(s) into '{image.name}'"
@@ -4014,3 +4016,172 @@ CLASSES = CLASSES + (
     REBLEND_OT_add_lighting_rig,
     REBLEND_OT_save_rig_template,
 )
+
+
+# --- art variants (Skou feedback #16, #20) ----------------------------------
+
+def element_variants(collection) -> list:
+    """The element's variant child collections (``re_variant`` set), in order."""
+    return [c for c in collection.children if c.get("re_variant")]
+
+
+def use_variant(collection, name: str) -> int:
+    """Show variant ``name`` of an element and hide its other variants, in the
+    viewport and the render. Returns how many variants were hidden."""
+    hidden = 0
+    for child in element_variants(collection):
+        off = child["re_variant"] != name
+        child.hide_render = off
+        child.hide_viewport = off
+        hidden += off
+    collection["re_variant"] = name
+    return hidden
+
+
+class REBLEND_OT_add_variant(bpy.types.Operator):
+    """Move the selected objects of the active element into a new art variant
+    (a child collection), so alternative art, such as 3D silk versus a 2D
+    overlay, can be switched as a group"""
+
+    bl_idname = "reblend.add_variant"
+    bl_label = "Add Art Variant"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty(name="Name", default="Variant")  # type: ignore[valid-type]
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        name = self.name.strip()
+        if not name or any(c["re_variant"] == name for c in element_variants(collection)):
+            self.report({"ERROR"}, f"variant name '{name}' is empty or already used")
+            return {"CANCELLED"}
+        child = bpy.data.collections.new(f"{collection.name} · {name}")
+        child["re_variant"] = name
+        collection.children.link(child)
+        moved = 0
+        for obj in context.selected_objects:
+            if obj.name not in collection.all_objects:
+                continue
+            for parent in [c for c in obj.users_collection
+                           if c is collection or c in element_variants(collection)]:
+                parent.objects.unlink(obj)
+            child.objects.link(obj)
+            moved += 1
+        use_variant(collection, name)
+        self.report({"INFO"}, f"variant '{name}' with {moved} object(s); now in use")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_use_variant(bpy.types.Operator):
+    """Render and show this art variant of the active element; hide the others"""
+
+    bl_idname = "reblend.use_variant"
+    bl_label = "Use Variant"
+    bl_options = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty()  # type: ignore[valid-type]
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        if not any(c["re_variant"] == self.name for c in element_variants(collection)):
+            self.report({"ERROR"}, f"no variant '{self.name}'")
+            return {"CANCELLED"}
+        use_variant(collection, self.name)
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (REBLEND_OT_add_variant, REBLEND_OT_use_variant)
+
+
+class REBLEND_OT_add_touch_point(bpy.types.Operator):
+    """Add the 'RE Touch Point' node to the active object's material: object
+    coordinates offset and turned per object, so wear on mirrored touch points
+    does not repeat. Wire it between Texture Coordinate and the wear texture"""
+
+    bl_idname = "reblend.add_touch_point"
+    bl_label = "Add Touch-Point Mapping"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        obj = context.active_object
+        material = obj.active_material if obj is not None else None
+        if material is None or material.node_tree is None:
+            self.report({"ERROR"}, "the active object has no node material")
+            return {"CANCELLED"}
+        node = material.node_tree.nodes.new("ShaderNodeGroup")
+        node.node_tree = kit.touch_point_group()
+        node.location = (-600, 300)
+        node.select = True
+        material.node_tree.nodes.active = node
+        self.report({"INFO"}, f"added '{kit.TOUCH_GROUP}' to '{material.name}'; connect its "
+                              "Vector to the wear texture")
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (REBLEND_OT_add_touch_point,)
+
+
+# --- live overlap hint (Skou feedback #33) -----------------------------------
+
+#: The last overlap message for the element being moved ("" = none). A module
+#: value, not a scene property: writing ID data from a depsgraph handler would
+#: trigger another update.
+LIVE_OVERLAP = {"element": "", "message": ""}
+
+
+def overlap_message(context, collection) -> str:
+    """Which elements the given element's frame overlaps where its
+    registration empty is now ("" when none): the validator's ``overlap``
+    check, run for one element while it is being moved."""
+    settings = _settings(context)
+    moving = _element_snapshot(collection, settings)
+    if not (moving.frame_w and moving.frame_h) or moving.kind == kinds.BACKDROP:
+        return ""
+    hits = []
+    for other in _element_collections(context.scene):
+        if other is collection:
+            continue
+        data = schema.props_to_data(other)
+        if data.kind == kinds.BACKDROP or not (data.frame_w and data.frame_h):
+            continue
+        for a in moving.effective_placements:
+            for b in _element_snapshot(other, settings).effective_placements:
+                if a.panel != b.panel:
+                    continue
+                if (a.x < b.x + data.frame_w and b.x < a.x + moving.frame_w
+                        and a.y < b.y + data.frame_h and b.y < a.y + moving.frame_h):
+                    hits.append(b.node)
+    if not hits:
+        return ""
+    return "overlaps " + ", ".join(sorted(set(hits)))
+
+
+@bpy.app.handlers.persistent
+def live_overlap_handler(scene, depsgraph=None) -> None:
+    """depsgraph_update_post: when the active object is an element's
+    registration empty and it moved, refresh :data:`LIVE_OVERLAP`."""
+    context = bpy.context
+    obj = getattr(context, "active_object", None)
+    if obj is None or obj.type != "EMPTY" or depsgraph is None:
+        return
+    if not any(getattr(u.id, "original", None) is obj and u.is_updated_transform
+               for u in depsgraph.updates):
+        return
+    for collection in _element_collections(scene):
+        if collection.get("re_registration") == obj.name:
+            LIVE_OVERLAP["element"] = collection.name
+            LIVE_OVERLAP["message"] = overlap_message(context, collection)
+            if getattr(context, "window_manager", None) is not None:
+                _redraw(context)
+            return

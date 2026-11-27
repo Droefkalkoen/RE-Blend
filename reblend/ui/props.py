@@ -370,6 +370,13 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         ),
         default=lua_reader.PANELS[0],
     )
+    preview_half: bpy.props.BoolProperty(
+        name="0.5x",
+        description="Show the preview at half size, as Reason shows the low-res set on a "
+                    "1080p screen: fine grain and small text that will alias show up "
+                    "here first (Skou feedback #27)",
+        default=False,
+    )
     #: The last Validate report. Render QA findings live in their own store
     #: (``render_findings``) so a render can never silently overwrite the
     #: validation report the designer is working through, or vice versa.
