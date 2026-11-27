@@ -383,6 +383,7 @@ class REBLEND_PT_rig(bpy.types.Panel):
         layout.prop_search(settings, "active_rotor", active, "all_objects",
                            text="Rotor")
         layout.prop(settings, "active_sweep_deg", text="Sweep")
+        layout.prop(settings, "active_zero_deg", text="Pointer at Rest")
         if settings.rotation_axis == "auto":
             axis = f"the Camera Axis ({_axis_short(settings.camera_axis)})"
         else:
@@ -421,6 +422,7 @@ class REBLEND_PT_rig(bpy.types.Panel):
         col = layout.column()
         col.enabled = table is not None and bool(table.controls())
         col.operator("reblend.generate_rig", icon="DRIVER")
+        layout.operator("reblend.centre_selected", icon="PIVOT_BOUNDBOX")
         if table is None:
             layout.label(text="Fix the state table first", icon="ERROR")
         elif not table.controls():

@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 #: Current schema version. Bump on any property change and add a migration.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 #: Property names and their defaults at the current schema version.
 DEFAULTS: dict[str, Any] = {
@@ -57,6 +57,9 @@ DEFAULTS: dict[str, Any] = {
     "re_offset_y": 0,
     "re_registration": "",    # name of the element's registration empty (§4.2)
     "re_sweep_deg": 300.0,    # knob sweep, -sweep/2..+sweep/2 (§4.3)
+    #: Where the modelled pointer sits at rest, degrees clockwise of
+    #: 12 o'clock as the viewer sees it; the rig turns it back (#18).
+    "re_zero_deg": 0.0,
     "re_rotor": "",           # name of the knob's rotating object ("" = not recorded)
     "re_states": "",          # state table JSON (state_tables module), "" = none
     "re_placements": "[]",    # JSON list of [panel, node, x, y]
@@ -270,6 +273,13 @@ def _add_full_bleed_and_samples(props: MutableMapping[str, Any]) -> None:
     off by default, so existing files render exactly as before."""
     props.setdefault("re_full_bleed", False)
     props.setdefault("re_samples", 0)
+
+
+@_migration(5)
+def _add_zero_angle(props: MutableMapping[str, Any]) -> None:
+    """v5 → v6: ``re_zero_deg`` (knob pointer rest angle), 0 = modelled at
+    12 o'clock, which is what every existing rig assumed."""
+    props.setdefault("re_zero_deg", 0.0)
 
 
 def migrate(props: MutableMapping[str, Any]) -> bool:

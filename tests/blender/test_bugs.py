@@ -115,3 +115,36 @@ def test_validate_runs_the_layout_rules_too(imported, empty_scene):
     assert "rack-screws" in codes
     assert all(c in catalogue.RULES for c in codes), codes - set(catalogue.RULES)
     assert layout.check_rules  # same module the bench runs
+
+
+def test_centre_selected_measures_hidden_text_shown(imported, empty_scene):
+    """#35: a hidden text object's bounds are read shown, so a changed body
+    centres correctly (its stale bounds put it off-panel)."""
+    from mathutils import Vector
+
+    from reblend.model import schema
+
+    collection = next(c for c in bpy.data.collections if schema.is_element(c)
+                      and c.get("re_registration"))
+    empty = bpy.data.objects[collection["re_registration"]]
+    curve = bpy.data.curves.new("legend", "FONT")
+    curve.body = "A"
+    text = bpy.data.objects.new("legend", curve)
+    collection.objects.link(text)
+    text.location = empty.matrix_world.translation + Vector((0.3, 0.2, 0.0))
+    bpy.context.view_layer.update()
+    text.hide_viewport = True
+    curve.body = "A MUCH LONGER LEGEND"  # bounds go stale while hidden
+
+    with bpy.context.temp_override(collection=collection, selected_objects=[text]):
+        assert bpy.ops.reblend.centre_selected("EXEC_DEFAULT") == {"FINISHED"}
+    assert text.hide_viewport  # restored
+
+    from reblend.ui import operators
+    _axis, u, v = operators._camera_basis(collection, empty_scene.reblend)
+    corners = operators.world_bounds_unhidden(bpy.context, [text])["legend"]
+    target = empty.matrix_world.translation
+    us = [c.dot(u) for c in corners]
+    vs = [c.dot(v) for c in corners]
+    assert abs((min(us) + max(us)) / 2 - target.dot(u)) < 1e-4
+    assert abs((min(vs) + max(vs)) / 2 - target.dot(v)) < 1e-4

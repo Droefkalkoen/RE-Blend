@@ -404,6 +404,16 @@ class REBLEND_PG_settings(bpy.types.PropertyGroup):
         get=lambda self: _active_sweep_deg(),
         set=lambda self, value: _set_active_sweep_deg(value),
     )
+    active_zero_deg: bpy.props.FloatProperty(
+        name="Pointer at Rest",
+        description="Where the modelled pointer sits at rest, in degrees "
+                    "clockwise of 12 o'clock as seen on the panel. Generate "
+                    "Rig turns it back so the centre frame points straight up",
+        min=-180.0,
+        max=180.0,
+        get=lambda self: _active_zero_deg(),
+        set=lambda self, value: _set_active_zero_deg(value),
+    )
     re2drender_output: bpy.props.EnumProperty(
         name="Output",
         description="Which asset set RE2DRender produces (its third "
@@ -459,6 +469,18 @@ def _set_active_rotor(name: str) -> None:
     from . import operators  # local: operators imports props at module load
 
     operators.set_active_rotor(bpy.context, name)
+
+
+def _active_zero_deg() -> float:
+    from . import operators
+
+    return operators.active_zero_deg(bpy.context)
+
+
+def _set_active_zero_deg(value: float) -> None:
+    from . import operators
+
+    operators.set_active_zero_deg(bpy.context, value)
 
 
 def _active_sweep_deg() -> float:

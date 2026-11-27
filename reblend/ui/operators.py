@@ -149,8 +149,8 @@ def _materialise(context, spec: ElementSpec, settings, reposition: bool) -> bool
     # must exist afterwards or the migration that would add it never runs.
     keep = set()
     if not is_new:
-        keep = {"re_sweep_deg", "re_rotor", "re_states", "re_registration",
-                "re_preview_frame", "re_shadow_owner"}
+        keep = {"re_sweep_deg", "re_zero_deg", "re_rotor", "re_states", "re_registration",
+                "re_preview_frame", "re_shadow_owner", "re_full_bleed", "re_samples"}
         if spec.frame_w == 0:
             keep |= {"re_frame_w", "re_frame_h"}
     old_w = int(collection.get("re_frame_w", 0)) if not is_new else 0
@@ -481,6 +481,22 @@ def set_active_sweep_deg(context, value: float) -> None:
     if collection is None or not schema.is_element(collection):
         return
     collection["re_sweep_deg"] = min(max(float(value), 1.0), 360.0)
+
+
+def active_zero_deg(context) -> float:
+    """The active knob's pointer rest angle (``re_zero_deg``)."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return 0.0
+    return float(collection.get("re_zero_deg", 0.0))
+
+
+def set_active_zero_deg(context, value: float) -> None:
+    """Setter behind the Rig panel's Pointer at Rest field."""
+    collection = getattr(context, "collection", None)
+    if collection is None or not schema.is_element(collection):
+        return
+    collection["re_zero_deg"] = min(max(float(value), -180.0), 180.0)
 
 
 def set_active_frame_size(context, w: int | None = None,
@@ -1193,6 +1209,7 @@ class REBLEND_OT_generate_rig(bpy.types.Operator):
                     sweep_deg=float(collection.get("re_sweep_deg",
                                                    calibration.DEFAULT_SWEEP_DEG)),
                     axis=axis,
+                    zero_deg=float(collection.get("re_zero_deg", 0.0)),
                 )
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
@@ -1368,6 +1385,7 @@ class REBLEND_OT_generate_all_rigs(bpy.types.Operator):
             sweep_deg=float(collection.get("re_sweep_deg",
                                            calibration.DEFAULT_SWEEP_DEG)),
             axis=_knob_axis(context, collection),
+            zero_deg=float(collection.get("re_zero_deg", 0.0)),
         )
         collection["re_rotor"] = rotor.name
         return True
@@ -2427,6 +2445,93 @@ def _visible_at_frame(obj) -> bool:
     in that frame, so leaving its sample out loses no shadow information.
     """
     return obj.visible_get()
+
+
+def world_bounds_unhidden(context, objects) -> dict[str, list[Vector]]:
+    """World-space bounding-box corners per object, read with every hidden
+    object briefly shown (Skou feedback #35).
+
+    The depsgraph does not evaluate a hidden object, so a text object hidden
+    by a state table keeps the bounds it had before its body or size changed;
+    centring it on those put an unlit legend off-panel. Shows the hidden ones,
+    updates once, reads the evaluated bounds, then restores every flag.
+    """
+    objects = list(objects)
+    hidden = [o for o in objects if not o.visible_get()]
+    saved = [(o, o.hide_viewport, o.hide_get()) for o in hidden]
+    try:
+        for obj in hidden:
+            obj.hide_viewport = False
+            obj.hide_set(False)
+        context.view_layer.update()
+        depsgraph = context.evaluated_depsgraph_get()
+        out = {}
+        for obj in objects:
+            ev = obj.evaluated_get(depsgraph)
+            out[obj.name] = [ev.matrix_world @ Vector(c) for c in ev.bound_box]
+        return out
+    finally:
+        for obj, hide_viewport, hide in saved:
+            obj.hide_viewport = hide_viewport
+            obj.hide_set(hide)
+        if saved:
+            context.view_layer.update()
+
+
+class REBLEND_OT_centre_selected(bpy.types.Operator):
+    """Centre the selected objects on the active element's registration point.
+
+    Moves them together, in the sheet's plane only (depth is kept), so their
+    combined bounds centre on the registration empty. Hidden objects (a
+    state's unlit legend) are measured shown, so their bounds are current.
+    """
+
+    bl_idname = "reblend.centre_selected"
+    bl_label = "Centre Selected on Element"
+    bl_options = {"REGISTER", "UNDO"}
+
+    axis: bpy.props.EnumProperty(  # type: ignore[valid-type]
+        name="Axis",
+        items=(("BOTH", "Both", "Centre horizontally and vertically"),
+               ("U", "Horizontal", "Centre horizontally only"),
+               ("V", "Vertical", "Centre vertically only")),
+        default="BOTH",
+    )
+
+    def execute(self, context):
+        collection = context.collection
+        if collection is None or not schema.is_element(collection):
+            self.report({"ERROR"}, "active collection is not an RE Element")
+            return {"CANCELLED"}
+        empty = bpy.data.objects.get(str(collection.get("re_registration", "")))
+        if empty is None:
+            self.report({"ERROR"}, "the element has no registration empty")
+            return {"CANCELLED"}
+        objects = [o for o in context.selected_objects
+                   if o is not empty and o.type in _GEOMETRY_TYPES]
+        if not objects:
+            self.report({"ERROR"}, "select the objects to centre")
+            return {"CANCELLED"}
+        _axis, u, v = _camera_basis(collection, _settings(context))
+        corners = [c for cs in world_bounds_unhidden(context, objects).values() for c in cs]
+        target = empty.matrix_world.translation
+        du = dv = 0.0
+        if self.axis in ("BOTH", "U"):
+            us = [c.dot(u) for c in corners]
+            du = target.dot(u) - (min(us) + max(us)) / 2.0
+        if self.axis in ("BOTH", "V"):
+            vs = [c.dot(v) for c in corners]
+            dv = target.dot(v) - (min(vs) + max(vs)) / 2.0
+        shift = u * du + v * dv
+        moved = {o for o in objects}
+        for obj in objects:
+            if obj.parent in moved:
+                continue  # moves with its parent
+            obj.matrix_world.translation += shift
+        self.report({"INFO"}, f"centred {len(objects)} object(s) "
+                              f"({du * _settings(context).ppb:+.1f}, "
+                              f"{dv * _settings(context).ppb:+.1f} px)")
+        return {"FINISHED"}
 
 
 def _world_bbox_centre(obj) -> Vector:
@@ -3778,4 +3883,5 @@ def _redraw(context) -> None:
 CLASSES = CLASSES + (
     REBLEND_OT_render_background,
     REBLEND_OT_cancel_background_render,
+    REBLEND_OT_centre_selected,
 )

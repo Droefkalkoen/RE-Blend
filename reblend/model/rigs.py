@@ -41,6 +41,7 @@ def ensure_turntable_driver(
     frames: int,
     sweep_deg: float = calibration.DEFAULT_SWEEP_DEG,
     axis: Sequence[float] = (0.0, -1.0, 0.0),
+    zero_deg: float = 0.0,
 ) -> None:
     """(Re)create the knob rotation driver on ``rotor``.
 
@@ -50,7 +51,8 @@ def ensure_turntable_driver(
     ``rotation_euler`` is driven in the rotor's local frame, which equals
     world for an un-rotated rotor (the M0-proven case).
     """
-    index, expression = calibration.turntable_expression(frames, sweep_deg, tuple(axis))
+    index, expression = calibration.turntable_expression(frames, sweep_deg, tuple(axis),
+                                                         zero_deg=zero_deg)
 
     rotor.rotation_mode = "XYZ"
     clear_turntable_driver(rotor)

@@ -29,12 +29,16 @@ _VIEWS = {
 }
 
 
-def _clock_deg(axis_name, frame, frames=61):
-    """Screen angle of a pointer that starts at 12 o'clock, clockwise from 12."""
+def _clock_deg(axis_name, frame, frames=61, zero_deg=0.0):
+    """Screen angle of a pointer modelled ``zero_deg`` clockwise of 12 o'clock."""
     up, right = _VIEWS[axis_name]
-    index, expr = cal.turntable_expression(frames, 300.0, cal.axis_vector(axis_name))
+    index, expr = cal.turntable_expression(frames, 300.0, cal.axis_vector(axis_name),
+                                           zero_deg=zero_deg)
     angle = eval(expr, {"radians": math.radians, "frame": frame})
-    p = _rot(index, angle, up)
+    # The modelled pointer: "up" turned zero_deg clockwise on screen.
+    z = math.radians(zero_deg)
+    start = tuple(u * math.cos(z) + r * math.sin(z) for u, r in zip(up, right))
+    p = _rot(index, angle, start)
     sx = sum(a * b for a, b in zip(p, right))
     sy = sum(a * b for a, b in zip(p, up))
     return math.degrees(math.atan2(sx, sy))
@@ -57,3 +61,10 @@ def test_default_axis_matches_the_pilots_hand_fix():
 def test_needs_two_frames():
     with pytest.raises(ValueError):
         cal.turntable_expression(1)
+
+
+@pytest.mark.parametrize("axis_name", sorted(_VIEWS))
+def test_pointer_at_rest_is_compensated(axis_name):
+    """#18: a pointer modelled 5.35 degrees clockwise still points up mid-sweep."""
+    assert _clock_deg(axis_name, 30, zero_deg=5.35) == pytest.approx(0.0, abs=1e-9)
+    assert _clock_deg(axis_name, 0, zero_deg=5.35) == pytest.approx(-150.0)
