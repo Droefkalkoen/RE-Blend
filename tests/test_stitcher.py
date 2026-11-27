@@ -90,3 +90,21 @@ def test_alpha_floor_drops_haze_and_keeps_full_coverage():
     assert out[0, 0, 3] == 0.0 and out[0, 0, 0] == 0.0
     assert out[0, 1, 3] == pytest.approx(0.5, abs=1e-6)
     assert out[0, 2, 3] == 1.0 and out[0, 2, 0] == 0.5
+
+
+def test_emission_layer_is_the_premultiplied_difference():
+    import numpy as np
+
+    from reblend.render.stitcher import StitchError, emission_layer
+
+    base = np.zeros((2, 2, 4), dtype=np.float32)
+    lit = np.zeros((2, 2, 4), dtype=np.float32)
+    base[0, 0] = (0.2, 0.2, 0.2, 1.0)
+    lit[0, 0] = (0.9, 0.5, 0.2, 1.0)
+    lit[1, 1] = (1.0, 1.0, 1.0, 0.5)   # halo beyond the silhouette
+    out = emission_layer(lit, base)
+    assert out[0, 0].tolist() == pytest.approx([0.7, 0.3, 0.0, 1.0])
+    assert out[1, 1].tolist() == pytest.approx([0.5, 0.5, 0.5, 1.0])
+    assert out[0, 1].tolist() == [0.0, 0.0, 0.0, 1.0]
+    with pytest.raises(StitchError):
+        emission_layer(lit, base[:1])

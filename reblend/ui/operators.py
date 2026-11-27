@@ -3885,3 +3885,132 @@ CLASSES = CLASSES + (
     REBLEND_OT_cancel_background_render,
     REBLEND_OT_centre_selected,
 )
+
+
+# --- palette and material kit (design §5.7) --------------------------------
+
+def _palette_file(context) -> Path:
+    path = Path(bpy.path.abspath(_settings(context).palette_path))
+    if not path.is_absolute():
+        path = _project_root(context) / path
+    return path
+
+
+class REBLEND_OT_load_palette(bpy.types.Operator):
+    """Read the project palette into the 'RE Palette' node group: one colour
+    output per swatch, so an accent is picked instead of retyped"""
+
+    bl_idname = "reblend.load_palette"
+    bl_label = "Load Palette"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+        from ..project.palette import PaletteError, read_palette
+
+        try:
+            swatches = read_palette(_palette_file(context))
+        except (PaletteError, LuaConfigError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        kit.palette_group(swatches)
+        self.report({"INFO"}, f"palette: {len(swatches)} swatch(es) in '{kit.PALETTE_GROUP}'")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_add_material_starter(bpy.types.Operator):
+    """Add a material from a starter node group and assign it to the selected
+    objects (their active slot)"""
+
+    bl_idname = "reblend.add_material_starter"
+    bl_label = "Add Material Starter"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        key = _settings(context).material_starter
+        material = kit.material_starter(key)
+        assigned = 0
+        for obj in context.selected_objects:
+            if obj.type not in {"MESH", "CURVE", "FONT", "SURFACE", "META"}:
+                continue
+            if obj.material_slots:
+                obj.material_slots[obj.active_material_index].material = material
+            else:
+                obj.data.materials.append(material)
+            assigned += 1
+        self.report({"INFO"}, f"material '{material.name}'"
+                              + (f" on {assigned} object(s)" if assigned else ""))
+        return {"FINISHED"}
+
+
+class REBLEND_OT_add_lighting_rig(bpy.types.Operator):
+    """Add the studio-hardware panel light: a soft key from the upper left at
+    about 35 degrees, a low cool fill and a faint rim, around the camera axis.
+    Appends the saved template instead when one is set"""
+
+    bl_idname = "reblend.add_lighting_rig"
+    bl_label = "Add Lighting Rig"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        settings = _settings(context)
+        template = bpy.path.abspath(settings.rig_template) if settings.rig_template else ""
+        if template:
+            existing = bpy.data.collections.get(kit.RIG_COLLECTION)
+            if existing is not None:
+                self.report({"ERROR"}, f"'{kit.RIG_COLLECTION}' already exists; remove it "
+                                       "before appending the template")
+                return {"CANCELLED"}
+            try:
+                kit.append_rig_template(template)
+            except (OSError, ValueError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"appended the rig from {template}")
+            return {"FINISHED"}
+        kit.lighting_rig(context.scene, settings.camera_axis, settings.ppb)
+        self.report({"INFO"}, f"'{kit.RIG_COLLECTION}' built for the {settings.camera_axis} "
+                              "camera axis")
+        return {"FINISHED"}
+
+
+class REBLEND_OT_save_rig_template(bpy.types.Operator):
+    """Save the scene's 'RE Lighting Rig' collection as a .blend template, so
+    other files and devices of the brand light the same way"""
+
+    bl_idname = "reblend.save_rig_template"
+    bl_label = "Save Rig as Template"
+
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")  # type: ignore[valid-type]
+
+    def invoke(self, context, event):
+        self.filepath = bpy.path.abspath(_settings(context).rig_template) or "lighting_rig.blend"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from ..model import kit
+
+        collection = bpy.data.collections.get(kit.RIG_COLLECTION)
+        if collection is None:
+            self.report({"ERROR"}, f"no '{kit.RIG_COLLECTION}' collection to save")
+            return {"CANCELLED"}
+        path = bpy.path.abspath(self.filepath)
+        if not path.endswith(".blend"):
+            path += ".blend"
+        kit.save_rig_template(path, collection)
+        _settings(context).rig_template = path
+        self.report({"INFO"}, f"rig saved to {path}")
+        return {"FINISHED"}
+
+
+CLASSES = CLASSES + (
+    REBLEND_OT_load_palette,
+    REBLEND_OT_add_material_starter,
+    REBLEND_OT_add_lighting_rig,
+    REBLEND_OT_save_rig_template,
+)

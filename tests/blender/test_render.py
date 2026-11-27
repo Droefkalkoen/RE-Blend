@@ -117,3 +117,32 @@ def test_run_cli_script_finds_the_loaded_package():
     script = Path(reblend.__file__).parent / "run_cli.py"
     module = runpy.run_path(str(script), run_name="not_main")
     assert module["_package"]() is sys.modules["reblend"]
+
+
+def test_emission_pass_writes_base_sheet_and_glow_strip(lamp_scene):
+    """§5.6: with re_emission_pass the GUI2D sheet is the unlit base and the
+    glow goes to Design/emission/, and the material is restored afterwards."""
+    import numpy as np
+
+    from reblend.project.png_meta import read_png_pixels
+
+    project, cap = lamp_scene
+    mat = bpy.data.materials.new("glow")
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bsdf.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    bsdf.inputs["Emission Color"].default_value = (1.0, 0.5, 0.0, 1.0)
+    bsdf.inputs["Emission Strength"].default_value = 5.0
+    cap.data.materials.append(mat)
+    bpy.data.collections[LAMP]["re_emission_pass"] = True
+
+    assert reblend.cli(["render", "--element", LAMP]) == 0
+    base = read_png_pixels(project / "GUI2D" / f"{LAMP}.png")
+    glow = read_png_pixels(project / "Design" / "emission" / f"{LAMP}_emission.png")
+    assert base.shape == glow.shape == (30, 15, 4)
+    centre = (7, 7)
+    assert glow[centre][0] > 200 and glow[centre][0] > glow[centre][2]   # orange glow
+    assert base[centre][:3].max() < 60                                   # dark cap
+    assert (glow[..., 3] == 255).all()                                   # opaque layer
+    assert bsdf.inputs["Emission Strength"].default_value == 5.0         # restored

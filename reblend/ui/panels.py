@@ -215,6 +215,9 @@ class REBLEND_PT_active(bpy.types.Panel):
             row.prop(active, '["re_samples"]', text="Samples (0 = scene)")
             if data.kind not in (kinds.BACKDROP, kinds.DISPLAY) and "re_full_bleed" in active:
                 row.prop(active, '["re_full_bleed"]', text="Full Bleed")
+        if kinds.renders_art(data.kind) and "re_emission_pass" in active:
+            layout.prop(active, '["re_emission_pass"]',
+                        text="Emission Pass (Design/emission/)")
         if kinds.renders_art(data.kind) and data.kind != kinds.BACKDROP:
             layout.prop(settings, "active_shadow_owner")
             if (data.shadow_owner == kinds.SHADOW_ELEMENT
@@ -489,6 +492,31 @@ class REBLEND_PT_render(bpy.types.Panel):
                               f"{settings.render_message}{when}", icon=icon)
 
 
+class REBLEND_PT_kit(bpy.types.Panel):
+    """Palette, material starters and the lighting rig (design §5.7)."""
+
+    bl_label = "Palette & Materials"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "RE-Blend"
+    bl_order = 9
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.reblend
+        row = layout.row(align=True)
+        row.prop(settings, "palette_path", text="")
+        row.operator("reblend.load_palette", text="", icon="COLOR")
+        row = layout.row(align=True)
+        row.prop(settings, "material_starter", text="")
+        row.operator("reblend.add_material_starter", text="Add", icon="MATERIAL")
+        layout.prop(settings, "rig_template")
+        row = layout.row(align=True)
+        row.operator("reblend.add_lighting_rig", icon="LIGHT_AREA")
+        row.operator("reblend.save_rig_template", text="", icon="FILE_TICK")
+
+
 class REBLEND_PT_render_report(bpy.types.Panel):
     """The last render's QA findings — its own store, so rendering never
     overwrites a Validate report (or vice versa)."""
@@ -740,6 +768,7 @@ CLASSES = (
     REBLEND_PT_rig,
     REBLEND_PT_render,
     REBLEND_PT_render_report,
+    REBLEND_PT_kit,
     REBLEND_PT_validation,
     REBLEND_PT_preview,
     REBLEND_PT_sync,

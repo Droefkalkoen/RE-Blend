@@ -188,11 +188,41 @@ def tool_preferences(context):
     return addon.preferences if addon is not None else None
 
 
+def _starter_items() -> dict:
+    # The kit's table without importing kit (which needs a scene to be useful).
+    return {
+        "BRUSHED": ("Brushed Metal", "Anisotropic metal with a directional grain"),
+        "ANODISED": ("Anodised Metal", "Coloured metal with a thin clear coat"),
+        "GLASS": ("Dark Glass", "Glossy dark glass for meter and display windows"),
+        "PLASTIC": ("Plastic Cap", "Satin plastic for knob caps and buttons"),
+        "KNURL": ("Machined Knurl", "Metal with a diamond knurl, for knob grips"),
+    }
+
+
 class REBLEND_PG_settings(bpy.types.PropertyGroup):
     project_root: bpy.props.StringProperty(
         name="RE Project",
         description="Root of the linked RE project (the directory containing GUI2D/)",
         subtype="DIR_PATH",
+    )
+    palette_path: bpy.props.StringProperty(
+        name="Palette",
+        description="Palette file, relative to the RE project or absolute: JSON "
+                    "({name: hex}) or text lines with a name and #RRGGBB (§5.7)",
+        default="Design/palette.json",
+    )
+    material_starter: bpy.props.EnumProperty(
+        name="Starter",
+        description="Material starter to add (§5.7)",
+        items=[(k, label, desc) for k, (label, desc) in _starter_items().items()],
+        default="BRUSHED",
+    )
+    rig_template: bpy.props.StringProperty(
+        name="Rig Template",
+        description="A .blend holding a saved 'RE Lighting Rig' collection. Add "
+                    "Lighting Rig appends it when set, else builds the default rig",
+        subtype="FILE_PATH",
+        default="",
     )
     ppb: bpy.props.FloatProperty(
         name="Pixels / Unit",

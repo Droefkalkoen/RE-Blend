@@ -16,7 +16,7 @@ from typing import Sequence
 
 import numpy as np
 
-__all__ = ["StitchError", "stitch", "unpremultiply", "split_strip", "frame_height",
+__all__ = ["emission_layer", "StitchError", "stitch", "unpremultiply", "split_strip", "frame_height",
            "crop_frames", "alpha_floor"]
 
 
@@ -89,6 +89,24 @@ def crop_frames(frames: Sequence[np.ndarray], rect: tuple[int, int, int, int]
     if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > fw or y + h > fh:
         raise StitchError(f"crop {[x, y, w, h]} does not fit inside a {fw}x{fh} frame")
     return [np.ascontiguousarray(f[y:y + h, x:x + w]) for f in frames]
+
+
+def emission_layer(lit: np.ndarray, base: np.ndarray) -> np.ndarray:
+    """The glow a compositing app adds back over ``base`` (design §5.6).
+
+    Both are straight-alpha ``(H, W, 4)`` float frames of the same element,
+    rendered with emission on (``lit``) and off (``base``). The result is an
+    opaque layer, black where nothing glows, holding the premultiplied
+    difference: in an 8-bit sRGB document, ``base`` plus this layer in Add
+    (Linear Dodge) mode gives back ``lit`` wherever emission only brightens.
+    """
+    if lit.shape != base.shape:
+        raise StitchError(f"lit {lit.shape} and base {base.shape} frames differ in size")
+    lit_p = lit[..., :3] * lit[..., 3:4]
+    base_p = base[..., :3] * base[..., 3:4]
+    out = np.ones_like(lit)
+    out[..., :3] = np.clip(lit_p - base_p, 0.0, 1.0)
+    return out
 
 
 def alpha_floor(pixels: np.ndarray, floor: float) -> np.ndarray:

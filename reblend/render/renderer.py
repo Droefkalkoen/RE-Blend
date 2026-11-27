@@ -68,6 +68,8 @@ class RenderResult:
     findings: list[Finding] = field(default_factory=list)
     #: Derived sheets written from this element's frames.
     derived_paths: list[Path] = field(default_factory=list)
+    #: The emission-only working strip (``re_emission_pass``, §5.6).
+    emission_path: Path | None = None
 
     @property
     def ok(self) -> bool:
@@ -251,6 +253,8 @@ def render_element(
     _warn_plan(result, scene, plan, data)
 
     axis = Vector(view_axis) if view_axis is not None else VIEW_AXIS
+    split_emission = bool(collection.get("re_emission_pass", False))
+    lit: list[np.ndarray] = []
     with _element_scene_state(scene, plan, caster_bounce=options.caster_bounce):
         camera = _make_camera(scene, data, registration, ppb, axis)
         try:
@@ -258,6 +262,13 @@ def render_element(
             with tempfile.TemporaryDirectory(prefix="reblend_") as scratch:
                 frame_paths = _render_frames(scene, data, Path(scratch))
                 frames = [bpy_io.load_raw_pixels(p) for p in frame_paths]
+                if split_emission:
+                    lit = frames
+                    base_dir = Path(scratch) / "base"
+                    base_dir.mkdir()
+                    with emission_off(collection.all_objects):
+                        frame_paths = _render_frames(scene, data, base_dir)
+                    frames = [bpy_io.load_raw_pixels(p) for p in frame_paths]
         finally:
             _remove_camera(camera)
 
@@ -273,6 +284,15 @@ def render_element(
     result.strip_path = strip_path
     _verify_written(result, strip_path, data)
 
+    if split_emission:
+        # A working file for the compositing app, never a GUI2D sheet (§5.6).
+        emission_dir = out_dir.parent / "Design" / "emission"
+        emission_dir.mkdir(parents=True, exist_ok=True)
+        path = emission_dir / f"{data.path}_emission.png"
+        layers = [stitcher.emission_layer(l, b) for l, b in zip(lit, frames)]
+        bpy_io.save_strip(stitcher.stitch(layers), path, name=f"reblend_{data.path}_emission")
+        result.emission_path = path
+
     for derived_path, rect in options.derived.get(data.path, ()):
         try:
             cut = stitcher.crop_frames(frames, rect)
@@ -287,6 +307,84 @@ def render_element(
             frame_w=int(rect[2]), frame_h=int(rect[3]))
         _verify_written(result, path, derived_data)
     return result
+
+
+#: Shader inputs that carry emission strength, by node type.
+_EMISSION_INPUTS = {
+    "BSDF_PRINCIPLED": "Emission Strength",
+    "EMISSION": "Strength",
+}
+
+
+def _emission_sockets(tree, seen=None):
+    """(tree, node, socket) for every emission-strength input, groups included."""
+    seen = set() if seen is None else seen
+    if tree is None or tree.as_pointer() in seen:
+        return
+    seen.add(tree.as_pointer())
+    for node in tree.nodes:
+        name = _EMISSION_INPUTS.get(node.type)
+        if name and name in node.inputs:
+            yield tree, node, node.inputs[name]
+        if node.type == "GROUP":
+            yield from _emission_sockets(node.node_tree, seen)
+
+
+def _action_fcurves(action):
+    from ..model.rigs import _fcurves  # 4.2 actions and 4.4+ layered actions
+
+    return _fcurves(action)
+
+
+class emission_off:
+    """Context manager: every emission strength on these objects' materials is
+    0, with its animation and drivers muted, and restored on exit (§5.6).
+
+    A linked strength input is unlinked for the duration and relinked after,
+    so a glow driven by a node chain goes dark too."""
+
+    def __init__(self, objects) -> None:
+        self.objects = list(objects)
+        self._values = []
+        self._links = []
+        self._muted = []
+
+    def __enter__(self):
+        trees = []
+        for obj in self.objects:
+            for slot in getattr(obj, "material_slots", ()):
+                material = slot.material
+                if material is not None and material.node_tree is not None \
+                        and material.node_tree not in trees:
+                    trees.append(material.node_tree)
+        seen: set = set()
+        for top in trees:
+            for tree, node, socket in _emission_sockets(top, seen):
+                for link in list(socket.links):
+                    self._links.append((tree, link.from_socket, socket))
+                    tree.links.remove(link)
+                self._values.append((socket, socket.default_value))
+                socket.default_value = 0.0
+                path = f'nodes["{node.name}"].inputs[{list(node.inputs).index(socket)}].default_value'
+                index = list(node.inputs).index(socket)
+                paths = {path, path.replace(f"[{index}]", f'["{socket.identifier}"]')}
+                anim = tree.animation_data
+                action = getattr(anim, "action", None)
+                curves = list(_action_fcurves(action)) if action is not None else []
+                curves += list(getattr(anim, "drivers", None) or ())
+                for fc in curves:
+                    if fc.data_path in paths and not fc.mute:
+                        fc.mute = True
+                        self._muted.append(fc)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for fc in self._muted:
+            fc.mute = False
+        for socket, value in self._values:
+            socket.default_value = value
+        for tree, from_socket, to_socket in self._links:
+            tree.links.new(from_socket, to_socket)
 
 
 def reload_changed_images() -> list[str]:

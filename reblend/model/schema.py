@@ -60,6 +60,9 @@ DEFAULTS: dict[str, Any] = {
     #: Where the modelled pointer sits at rest, degrees clockwise of
     #: 12 o'clock as the viewer sees it; the rig turns it back (#18).
     "re_zero_deg": 0.0,
+    #: Post-composite pipeline (§5.6): render a base sheet with emission off
+    #: plus an emission-only working strip under Design/emission/.
+    "re_emission_pass": False,
     "re_rotor": "",           # name of the knob's rotating object ("" = not recorded)
     "re_states": "",          # state table JSON (state_tables module), "" = none
     "re_placements": "[]",    # JSON list of [panel, node, x, y]
@@ -278,8 +281,10 @@ def _add_full_bleed_and_samples(props: MutableMapping[str, Any]) -> None:
 @_migration(5)
 def _add_zero_angle(props: MutableMapping[str, Any]) -> None:
     """v5 → v6: ``re_zero_deg`` (knob pointer rest angle), 0 = modelled at
-    12 o'clock, which is what every existing rig assumed."""
+    12 o'clock, which is what every existing rig assumed; and
+    ``re_emission_pass`` (§5.6), off = the Blender-complete pipeline."""
     props.setdefault("re_zero_deg", 0.0)
+    props.setdefault("re_emission_pass", False)
 
 
 def migrate(props: MutableMapping[str, Any]) -> bool:
