@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "sprites": {
     "fader_onoffbypass": {"frame_w": 60, "frame_h": 240, "shape": {"type": "fader"}},
     "fader_onoffbypass_folded": {"frame_w": 60, "frame_h": 120, "shape": {"type": "fader"}},
@@ -8,5 +8,9 @@
   "labels": [
     {"id": "lbl-level", "panel": "front", "text": "LEVEL", "x": 1885, "y": 280, "size_px": 48,
      "functional": true, "node": "knob_level"}
+  ],
+  "art": [
+    {"panel": "back", "kind": "routing_icon", "name": "Routing_Icon_01", "x": 640, "y": 560},
+    {"panel": "back", "kind": "routing_icon", "name": "Routing_Icon_03", "x": 800, "y": 560}
   ]
 }

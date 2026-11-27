@@ -75,7 +75,7 @@ class BenchProject:
             except LuaConfigError:
                 pass
         link = ProjectLink(root=root, gui2d_dir=gui2d, device=device, hdgui=hdgui,
-                           specs=specs, property_steps=steps)
+                           specs=specs, property_steps=steps, sidecar=sidecar)
         return cls(root, dict(sources), link, sidecar)
 
     def with_changes(self, sources: dict[str, str] | None = None,

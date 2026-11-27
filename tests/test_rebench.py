@@ -90,9 +90,18 @@ SIZES = {
 }
 
 
-def make_project(tmp_path, device_type="creative_fx", knob_x=1000, device=None, hdgui=None):
+ICONS_SIDECAR = json.dumps({"version": 3, "art": [
+    {"panel": "back", "kind": "routing_icon", "name": "Routing_Icon_01", "x": 900, "y": 200},
+    {"panel": "back", "kind": "routing_icon", "name": "Routing_Icon_TrueStereo", "x": 1000, "y": 200},
+]})
+
+
+def make_project(tmp_path, device_type="creative_fx", knob_x=1000, device=None, hdgui=None,
+                 sidecar=ICONS_SIDECAR):
     gui = tmp_path / "GUI2D"
-    gui.mkdir()
+    gui.mkdir(parents=True)
+    if sidecar is not None:
+        (gui / "rebench.json").write_text(sidecar)
     (tmp_path / "info.lua").write_text(f'format_version = "1.0"\ndevice_type = "{device_type}"\n')
     (gui / "device_2D.lua").write_text((device or DEVICE_2D).replace("KNOB_X", str(knob_x)))
     (gui / "hdgui_2D.lua").write_text(hdgui or HDGUI_2D)
@@ -187,3 +196,66 @@ def test_cli_passes_a_clean_project(tmp_path, capsys):
 def test_scene_only_codes_are_skipped(silence_detector):
     result = run_checks(silence_detector)
     assert not {"states", "rotor", "shadow-owner"} & set(codes(result))
+
+
+# --- screws, routing icons, SDK part sizes (Skou feedback #25, #30, #31) ----
+
+def _art(*marks):
+    return json.dumps({"version": 3, "art": list(marks)})
+
+
+def _icon(name):
+    return {"panel": "back", "kind": "routing_icon", "name": name, "x": 900, "y": 200}
+
+
+def test_routing_icons_missing_is_a_warning_and_incomplete_is_an_error(tmp_path):
+    root = make_project(tmp_path / "a", sidecar=None)
+    found = [f for f in run_checks(root).findings if f.code == "routing-icons"]
+    assert [(f.severity, f.source) for f in found] == [("warning", "req")]
+
+    root = make_project(tmp_path / "b", sidecar=_art(_icon("Routing_Icon_03")))
+    found = [f for f in run_checks(root).findings if f.code == "routing-icons"]
+    assert [f.severity for f in found] == ["error"] and "mono-input" in found[0].message
+
+
+def test_routing_icons_follow_the_routing_hint(tmp_path):
+    root = make_project(tmp_path, sidecar=_art(_icon("Routing_Icon_01"), _icon("Routing_Icon_03")))
+    (root / "motherboard_def.lua").write_text(
+        'jbox.add_stereo_effect_routing_hint {\n  type = "mixing_stereo",\n'
+        '  left_input = "/audio_inputs/L",\n}\n')
+    found = [f for f in run_checks(root).findings if f.code == "routing-icons"]
+    assert [f.severity for f in found] == ["warning"] and "mixing_stereo" in found[0].message
+
+
+def test_routing_icons_only_apply_to_effects(tmp_path):
+    root = make_project(tmp_path, device_type="instrument", sidecar=None)
+    assert "routing-icons" not in codes(run_checks(root))
+
+
+def test_screws_must_sit_on_the_rack_holes(tmp_path):
+    on = {"panel": "back", "kind": "screw", "name": "ok", "x": 80, "y": 60}
+    off = {"panel": "back", "kind": "screw", "name": "low", "x": 80, "y": 50}
+    root = make_project(tmp_path, sidecar=_art(_icon("Routing_Icon_01"),
+                                               _icon("Routing_Icon_03"), on, off))
+    found = [f for f in run_checks(root).findings if f.code == "rack-screws"]
+    assert [(f.subject, f.panel) for f in found] == [("low", "back")]
+    assert "+10 px" in found[0].message
+
+
+def test_layout_rules_run_in_validate_link_too(tmp_path):
+    from reblend.project.link import load_project
+    from reblend.project.validation import validate_link
+
+    link = load_project(make_project(tmp_path, sidecar=None))
+    elements = [spec.to_element_data() for spec in link.specs]
+    assert "routing-icons" in {f.code for f in validate_link(link, elements, rules=True).findings}
+    assert "routing-icons" not in {f.code for f in validate_link(link, elements).findings}
+
+
+def test_routing_icon_names_and_numbers():
+    from reblend.project.layout import routing_icon_number
+
+    assert routing_icon_number("Routing_Icon_03") == "03"
+    assert routing_icon_number("Routing_Icon_mixingsum") == "04"
+    assert routing_icon_number("Routing_Icon_9") is None
+    assert routing_icon_number("Knob") is None

@@ -23,6 +23,7 @@ from mathutils import Vector
 from .. import __version__
 from ..model import blockout, calibration, kinds, rigs, schema, state_tables
 from ..project import lua_writer, merge, reporting, sdk_parts, validation
+from ..project.profile import load_profile as load_house_profile
 from ..project.link import ElementSpec, ProjectLink, load_project
 from ..project.lua_reader import LuaConfigError
 from ..project.lua_writer import PatchError
@@ -768,7 +769,13 @@ class REBLEND_OT_validate(bpy.types.Operator):
         scene_info = validation.SceneInfo(
             view_transform=context.scene.view_settings.view_transform
         )
-        report = validation.validate_link(link, elements, scene_info)
+        try:
+            profile = load_house_profile(link.root)
+        except (ValueError, OSError) as exc:
+            self.report({"WARNING"}, f"house profile ignored: {exc}")
+            profile = None
+        report = validation.validate_link(link, elements, scene_info, rules=True,
+                                             profile=profile)
         props.store_validation_report(_settings(context), report.findings)
 
         if report.ok and not report.warnings:
@@ -3369,6 +3376,13 @@ class REBLEND_OT_install_sdk_parts(bpy.types.Operator):
                     self.report({"WARNING"}, str(exc))
                 else:
                     installed.append(sprite)
+                    problem = sdk_parts.check_stock_size(
+                        part, link.gui2d_dir / f"{sprite}.png")
+                    if problem and widget.kind == "device_name" and sdk_parts.check_stock_size(
+                            sdk_parts.VERTICAL_TAPE, link.gui2d_dir / f"{sprite}.png") is None:
+                        problem = None
+                    if problem:
+                        self.report({"WARNING"}, problem)
 
         if not installed and not skipped and not missing:
             self.report({"INFO"}, "no SDK-supplied parts in this project")

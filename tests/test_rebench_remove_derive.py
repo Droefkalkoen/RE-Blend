@@ -96,3 +96,43 @@ def test_sidecar_without_derived_sheets_keeps_its_shape(device):
     apply_ops(device, [{"op": "set_frame_size", "sprite": "x", "w": 10, "h": 10}])
     raw = (device / "GUI2D" / "rebench.json").read_text()
     assert "derive_from" not in raw and "crop" not in raw
+
+
+# --- centre (visible) and art marks (Skou feedback #28, #30, #31) ----------
+
+def _back_pos(project, node):
+    return next((p.x, p.y) for sp in project.link.specs for p in sp.placements
+                if p.node == node and p.panel == "back")
+
+
+def test_centre_puts_the_visible_art_on_the_point(device):
+    import numpy as np
+
+    from reblend.project.png_meta import write_rgba_png
+
+    w, h, frames = 95, 105, 3
+    # Opaque art only in the left half of every frame: visible centre at w/4.
+    px = np.zeros((h * frames, w, 4), dtype=np.uint8)
+    px[:, : w // 2, 3] = 255
+    write_rgba_png(device / "GUI2D" / "SharedAudioJack.png", w, h * frames, px.tobytes())
+
+    op = {"op": "centre", "panel": "back", "node": "socket_in_left", "x": 1000, "y": 300}
+    plain = apply_ops(device, [op], dry_run=True)
+    seen = apply_ops(device, [dict(op, visible=True)], dry_run=True)
+    assert _back_pos(plain.project, "socket_in_left") == (round(1000 - w / 2), round(300 - h / 2))
+    shift = _back_pos(seen.project, "socket_in_left")[0] - _back_pos(plain.project, "socket_in_left")[0]
+    assert abs(shift - w / 4) <= 1
+
+
+def test_art_marks_round_trip_and_feed_the_rules(device):
+    result = apply_ops(device, [
+        {"op": "art", "panel": "back", "kind": "screw", "name": "s1", "x": 80, "y": 40},
+    ])
+    assert result.written
+    assert Sidecar.load(device).art[-1].name == "s1"
+    assert "rack-screws" in [f.code for f in result.added]
+    result = apply_ops(device, [{"op": "remove_art", "panel": "back", "kind": "screw",
+                                 "name": "s1"}])
+    assert "rack-screws" in [f.code for f in result.resolved]
+    with pytest.raises(OpError):
+        apply_ops(device, [{"op": "art", "panel": "back", "kind": "logo", "x": 0, "y": 0}])

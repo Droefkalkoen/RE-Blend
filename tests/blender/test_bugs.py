@@ -99,3 +99,19 @@ def test_revalidate_drivers_reenables_invalid_ones():
     fixed = rigs.revalidate_drivers([obj])
     assert fixed == ["lamp: location"]
     assert fcurve.driver.is_valid
+
+
+def test_validate_runs_the_layout_rules_too(imported, empty_scene):
+    """One rule engine: Blender's Validate reports the bench's layout rules
+    (fold arrow, routing icons, screws ...), not only the art/rig checks."""
+    import json
+
+    from reblend.project import catalogue, layout
+
+    (imported / "GUI2D" / "rebench.json").write_text(json.dumps({"version": 3, "art": [
+        {"panel": "back", "kind": "screw", "name": "bad", "x": 80, "y": 20}]}))
+    assert bpy.ops.reblend.validate("EXEC_DEFAULT") == {"FINISHED"}
+    codes = {f.code for f in empty_scene.reblend.findings}
+    assert "rack-screws" in codes
+    assert all(c in catalogue.RULES for c in codes), codes - set(catalogue.RULES)
+    assert layout.check_rules  # same module the bench runs

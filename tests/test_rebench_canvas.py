@@ -42,7 +42,7 @@ def test_sidecar_round_trips(tmp_path):
          "size_px": 48},
     ])
     data = json.loads((root / "GUI2D" / "rebench.json").read_text())
-    assert data["version"] == 2
+    assert data["version"] == 3
     side = Sidecar.load(root)
     assert side.sprites["Knob"].frame_w == 120
     assert side.label("l1").text == "GAIN"
@@ -81,11 +81,12 @@ def test_large_or_decorative_label_does_not_warn(tmp_path):
 def test_dry_run_writes_nothing_and_reports_the_new_finding(tmp_path):
     root = make_project(tmp_path)
     before = _lua(root)
+    sidecar = (root / "GUI2D" / "rebench.json").read_bytes()
     result = apply_ops(root, [{"op": "move", "panel": "front", "node": "Knob", "x": 3620,
                                "y": 100}], dry_run=True)
     assert not result.written
     assert _lua(root) == before
-    assert not (root / "GUI2D" / "rebench.json").exists()
+    assert (root / "GUI2D" / "rebench.json").read_bytes() == sidecar
     assert "rack-ear" in [f.code for f in result.added]
 
 

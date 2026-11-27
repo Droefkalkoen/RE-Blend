@@ -26,12 +26,21 @@ Operations::
      "drop_property": false}   # true also removes an unshared property and its texts
     {"op": "derive", "sprite": "fader_folded", "from": "fader", "crop": [0, 60, 60, 120]}
     {"op": "underive", "sprite": "fader_folded"}
+    {"op": "centre", "panel": "back", "node": "socket_in_left", "x": 653, "y": 405,
+     "visible": true}   # put the node's centre (or its visible art's centre) here
+    {"op": "art", "panel": "back", "kind": "routing_icon", "name": "Routing_Icon_03",
+     "x": 800, "y": 560}   # declare a mark painted into the panel art (or a screw)
+    {"op": "remove_art", "panel": "back", "kind": "routing_icon", "name": "Routing_Icon_03"}
 
 ``add_control`` writes the node, the widget, and (for a new property) the
 property stub and its English name; ``remove_control`` undoes the same edits:
 see :mod:`rebench.stubs`. ``derive`` marks a sheet as cut from another
 sprite's frames (Skou feedback #38): RE-Blend renders the source and writes
 the cropped copy, so the derived sheet needs no element of its own.
+``centre`` with ``visible`` centres what the eye sees: the SDK jack art sits
+about 5 px left of its frame centre (Skou feedback #28). ``art`` declares the
+screws and routing icons painted into a backdrop, which the screw and
+routing-icon rules then check (#30, #31).
 """
 
 from __future__ import annotations
@@ -49,7 +58,7 @@ from reblend.project.lua_writer import (
 from .check import BenchFinding, CheckResult, check_project
 from .profile import Profile, load_profile
 from .project import DEVICE_2D, BenchProject
-from .sidecar import Label, SpriteInfo
+from .sidecar import ArtMark, Label, SpriteInfo
 from .stubs import (
     WIDGETS, ControlSpec, StubError, add_control_sources, remove_control_sources,
 )
@@ -104,6 +113,18 @@ def _node_position(project: BenchProject, panel: str, node: str) -> tuple[float,
     return base[0] + off[0], base[1] + off[1]
 
 
+def _visible_offset(path: Path, frame_h: int) -> tuple[float, float]:
+    """Visible-art centre minus frame centre, from the sheet's first frame."""
+    from reblend.project.png_meta import PngError, read_png_pixels
+    from reblend.project.sdk_parts import visible_centre_offset
+
+    try:
+        pixels = read_png_pixels(path)
+    except (PngError, OSError):
+        return 0.0, 0.0
+    return visible_centre_offset(pixels[..., 3] / 255.0, frame_h)
+
+
 def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
               profile: Profile | None = None,
               project: BenchProject | None = None) -> ApplyResult:
@@ -140,6 +161,46 @@ def apply_ops(root: Path | str, ops: list[dict], dry_run: bool = False,
                 base = node_base_offset(device, panel, node) or (0.0, 0.0)
                 patch(OffsetEdit(panel, node, round(x - base[0]), round(y - base[1])))
                 applied.append(f"{kind} {panel}/{node} to ({round(x)}, {round(y)})")
+            elif kind == "centre":
+                panel, node = op["panel"], op["node"]
+                n = device.node(panel, node)
+                spec = next((sp for sp in current.link.specs
+                             if any(p.panel == panel and p.node == node for p in sp.placements)),
+                            None)
+                if n is None or spec is None or not (spec.frame_w and spec.frame_h):
+                    reasons.append(f"op {i}: no sized sprite node '{node}' on the {panel} panel")
+                    continue
+                dx = dy = 0.0
+                if op.get("visible"):
+                    dx, dy = _visible_offset(current.link.gui2d_dir / f"{spec.path}.png",
+                                             spec.frame_h)
+                x = float(op["x"]) - spec.frame_w / 2 - dx
+                y = float(op["y"]) - spec.frame_h / 2 - dy
+                base = node_base_offset(device, panel, node) or (0.0, 0.0)
+                patch(OffsetEdit(panel, node, round(x - base[0]), round(y - base[1])))
+                what = "visible centre" if op.get("visible") else "centre"
+                applied.append(f"centre {panel}/{node}: {what} at ({op['x']}, {op['y']}), "
+                               f"offset ({round(x)}, {round(y)})")
+            elif kind == "art":
+                mark = ArtMark(panel=op["panel"], kind=op["kind"], name=op.get("name", ""),
+                               x=float(op["x"]), y=float(op["y"]))
+                if mark.kind not in ("screw", "routing_icon"):
+                    reasons.append(f"op {i}: art kind is 'screw' or 'routing_icon'")
+                    continue
+                sidecar.art = [m for m in sidecar.art
+                               if (m.panel, m.kind, m.name) != (mark.panel, mark.kind, mark.name)]
+                sidecar.art.append(mark)
+                current = current.with_changes(sources=sources, sidecar=sidecar)
+                applied.append(f"art {mark.kind} {mark.name} on {mark.panel}")
+            elif kind == "remove_art":
+                key = (op["panel"], op["kind"], op.get("name", ""))
+                kept = [m for m in sidecar.art if (m.panel, m.kind, m.name) != key]
+                if len(kept) == len(sidecar.art):
+                    reasons.append(f"op {i}: no {key[1]} '{key[2]}' on the {key[0]} panel")
+                    continue
+                sidecar.art = kept
+                current = current.with_changes(sources=sources, sidecar=sidecar)
+                applied.append(f"remove_art {key[1]} {key[2]} on {key[0]}")
             elif kind == "set_frames":
                 panel, node, frames = op["panel"], op["node"], int(op["frames"])
                 n = device.node(panel, node)

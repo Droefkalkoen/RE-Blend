@@ -93,8 +93,17 @@ def validate_link(
     link: link_mod.ProjectLink,
     elements: Sequence[schema.ElementData],
     scene: SceneInfo | None = None,
+    *,
+    rules: bool = False,
+    profile=None,
 ) -> Report:
-    """Validate a scene's elements against a loaded project."""
+    """Validate a scene's elements against a loaded project.
+
+    ``rules`` adds the panel-layout rules of :mod:`reblend.project.layout`
+    (fold arrow, rack ears, bypass corner, text size, screws, routing icons,
+    SDK part sizes), so RE-Blend's Validate and RE Bench's ``check`` run one
+    rule engine. ``profile`` is the house profile (defaults when None).
+    """
     report = validate_project(
         device=link.device,
         hdgui=link.hdgui,
@@ -105,6 +114,11 @@ def validate_link(
         derived={path: spec.derived_from for path, spec in link.derived.items()},
     )
     _check_derived(report, link)
+    if rules:
+        from .layout import check_rules
+
+        for f in check_rules(link, profile):
+            report.add(f.severity, f.code, f.message, f.subject, f.panel)
     return report
 
 

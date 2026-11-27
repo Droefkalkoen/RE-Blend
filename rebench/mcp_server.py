@@ -48,7 +48,15 @@ _OPS = {
         '{"op":"add_control","panel":"front","node":"knob_drive","widget":"analog_knob",'
         '"x":900,"y":110,"title":"Drive"} (widget: analog_knob, toggle_button, '
         'momentary_button, sequence_fader with "steps"; writes the node, widget, '
-        'property stub and its English name)'
+        'property stub and its English name); '
+        '{"op":"remove_control","panel":"front","node":"knob_drive","drop_property":false}; '
+        '{"op":"derive","sprite":"fader_folded","from":"fader","crop":[0,60,60,120]}; '
+        '{"op":"underive","sprite":"fader_folded"}; '
+        '{"op":"centre","panel":"back","node":"socket_in_left","x":653,"y":405,"visible":true} '
+        '(visible: centre the art the eye sees, not the frame); '
+        '{"op":"art","panel":"back","kind":"routing_icon","name":"Routing_Icon_03","x":800,"y":560} '
+        '(kind screw or routing_icon: marks painted into the panel art); '
+        '{"op":"remove_art","panel":"back","kind":"routing_icon","name":"Routing_Icon_03"}'
     ),
 }
 _PANEL = {"type": "string", "enum": list(agent.PANELS)}

@@ -108,6 +108,8 @@ class ProjectLink:
     #: property path -> steps, from motherboard_def.lua (best effort; empty
     #: when the file is absent or unreadable — validation degrades gracefully).
     property_steps: dict[str, int] = field(default_factory=dict)
+    #: ``GUI2D/rebench.json`` (empty when the project has none).
+    sidecar: Sidecar = field(default_factory=Sidecar)
 
     def spec(self, path: str) -> ElementSpec | None:
         for candidate in self.specs:
@@ -135,7 +137,8 @@ def load_project(root: Path | str) -> ProjectLink:
     hdgui = read_hdgui_2d(gui2d / "hdgui_2D.lua")
 
     specs = derive_specs(device, hdgui)
-    size_specs(specs, gui2d, Sidecar.load(root))
+    sidecar = Sidecar.load(root)
+    size_specs(specs, gui2d, sidecar)
 
     property_steps: dict[str, int] = {}
     motherboard = root / MOTHERBOARD_FILENAME
@@ -152,6 +155,7 @@ def load_project(root: Path | str) -> ProjectLink:
         hdgui=hdgui,
         specs=specs,
         property_steps=property_steps,
+        sidecar=sidecar,
     )
 
 
