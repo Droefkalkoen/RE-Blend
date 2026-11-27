@@ -4,36 +4,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-Implementation has started with the Blender-independent layers. Repository contents:
+M0–M3 are implemented (M1–M3 exit checks run on the build machine; see `ROADMAP.md`), RE
+Bench phases 1–3 are done, and every Skou feedback item is done or by design
+([`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md)). Repository contents:
 
 - `Blender_RE_Plugin_Design.md` — the full design document (v0.2 draft) for RE-Blend and the
   authoritative specification to build from. Read it before doing implementation work; it is
   self-contained and every section number referenced below points into it.
 - `AGENTS.md` — the guide for agents: driving RE Bench and RE-Blend, and the SDK rules in our
   own words. Keep it current when a command, op, rule or file format changes.
-- `docs/rebench-design.md` — RE Bench, the pre-Blender layout and rules bench in `rebench/`
-  (on `develop`; see Branches): what each phase delivered.
+- `docs/rebench-design.md` — RE Bench, the pre-Blender layout and rules bench in `rebench/`:
+  what each phase delivered.
 - `ROADMAP.md` — implementation order and milestone exit criteria (M0–M4). Where it disagrees
   with the design doc, the design doc wins and the roadmap gets fixed.
 - `README.md` — public-facing overview; keep it consistent with the design doc.
 - `reblend/` — the extension package (import name `reblend`; distribution/repo name `re-blend`).
-  The M1 (MVP) and M2 (sync) code is in place across the planned module layout: `project/`
-  (sandboxed Lua reading, patch-mode Lua writer + re-import merge, motherboard steps, PNG
-  metadata, project link/import, SDK stock parts, validation engine), `model/` (versioned RE Element schema +
-  migrations, kinds, state tables, calibration, rigs), `render/` (stitcher, panel compositor +
-  contact sheet, output validators, shadow-ownership policy, Blender I/O, batch renderer),
-  `ui/` (N-panel, operators). Only
-  `model/rigs.py`, `render/bpy_io.py`, `render/renderer.py`, and `ui/*` import `bpy` (lazily
-  via `reblend.register()`); everything else is pure Python under test.
+  `project/` (sandboxed Lua reading, patch-mode Lua writer + re-import merge, motherboard
+  steps, PNG metadata and pixels, project link/import, sidecar, SDK stock parts, palette,
+  the validation engine, and the layout rules + profile + rule catalogue shared with RE
+  Bench: `layout.py`, `profile.py`, `catalogue.py`), `model/` (versioned RE Element schema +
+  migrations, kinds, state tables, calibration, rigs, blockouts, the material/lighting kit in
+  `kit.py`), `render/` (stitcher, panel compositor + contact sheet, output validators,
+  shadow-ownership policy, Blender I/O, batch renderer, the render manifest in
+  `fingerprint.py`), `ui/` (N-panel, operators), and `headless.py` (the CLI behind
+  `reblend.cli()`; `run_cli.py` is its entry for `blender -b --python`). Only
+  `model/rigs.py`, `model/kit.py`, `render/bpy_io.py`, `render/renderer.py`, and `ui/*`
+  import `bpy` (lazily via `reblend.register()`); everything else is pure Python under test.
+- `rebench/` — RE Bench (`python3 -m rebench`): check, apply ops, render, greybox, new device
+  from the `effect` or `instrument` template (`rebench/templates/`, CC0), the canvas and the
+  MCP server. It imports RE-Blend's pure-Python layer.
+- `tools/package.py` — builds one extension zip per platform with the `lupa` wheels bundled.
 - `docs/sdk-gui-reference.md` — RE-Blend's transcription of the SDK 4.6.0 GUI documents
   (designer manual, design guidelines, scripting specification): panel geometry, the per-widget
   frame-count contract, the parts whose appearance Reason fixes, and RE2DRender's arguments.
   Read it before any work on the widget model, panel geometry or validation.
 - `tests/` — pytest suite with SDK-convention fixtures under `tests/fixtures/`.
+  `tests/blender/` runs against the `bpy` module (`pip install bpy` for the matching Python;
+  skipped without it): import, rig, render with Cycles, the headless CLI and the kit.
 - `reblend/blender_manifest.toml` — Blender 4.2 LTS+ extension manifest; it lives *inside*
   the package beside `reblend/__init__.py` because Blender's extension system requires the
-  manifest at the root of the extension source (build with
-  `blender --command extension build --source-dir reblend`). `pyproject.toml` is dev tooling
+  manifest at the root of the extension source (build with `python3 tools/package.py`, which
+  bundles `lupa`). `pyproject.toml` is dev tooling
   only (RE-Blend is never pip-installed into Blender). See `docs/install.md`.
 - `SDK_v4.6.0/` — a local, read-only copy of the Reason Rack Extension (Jukebox) SDK,
   kept on disk as reference material (the example devices are *not* included). If your copy
@@ -50,15 +61,11 @@ Implementation has started with the Blender-independent layers. Repository conte
 
 ## Branches
 
-- **`main`** is the RE-Blend that Skou (the pilot) uses while Skou is in development. Skou has
-  hand-worked around the issues in its `docs/RE-Blend_feedback.md`, so `main` takes no feature
-  work until Skou ships; only a fix Skou itself asks for goes here.
-- **`skou-baseline`** is a frozen copy of `main` at the point the split was made (2026-11-10),
-  so Skou can always reinstall exactly that version.
-- **`develop`** is where new work lands: the Skou feedback fixes
-  ([`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md)) and RE Bench
-  ([`docs/rebench-design.md`](docs/rebench-design.md)). Feature branches open their PRs
-  against `develop`, not `main`. `develop` merges into `main` once Skou is done.
+- **`main`** is the released RE-Blend. Skou (the pilot) shipped on it; `skou-baseline` is a
+  frozen copy of `main` from 2026-11-10 if exactly that version is ever needed again.
+- **`develop`** is where new work lands. Feature branches open their PRs against `develop`;
+  `develop` merges into `main` when a set of changes is ready. The Skou feedback fixes and RE
+  Bench were built here and merged into `main` once Skou shipped.
 
 ## Commands
 
@@ -66,6 +73,9 @@ Implementation has started with the Blender-independent layers. Repository conte
 pip install -e ".[dev]"       # or: pip install lupa numpy pytest
 python3 -m pytest             # run the test suite (no Blender needed)
 python3 -m pytest tests/test_device_2d.py::test_knob_node   # single test
+python3 -m pytest tests/blender                # Blender-side tests (needs the bpy module)
+python3 -m rebench check <project root>        # every rule, from the project files
+python3 tools/package.py                       # extension zips with lupa bundled
 ```
 
 The `reblend.project` layer is pure Python and must stay importable and testable without

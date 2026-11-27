@@ -8,11 +8,11 @@ presses, fader detents) to Blender's timeline frames, and automates everything b
 scene and correct sprite sheets in `GUI2D/`. This includes two-way synchronisation with the RE 
 project's Lua configuration so sizes, offsets, and frame counts are matched.
 
-> **Status: in development.** The M0 render spike passed against the real SDK toolchain, and
-> the M1 (MVP: import, rigs, batch render, validation) and M2 (two-way sync: patch-mode Lua
-> export, re-import merge, panel preview & QA) implementations have landed, pending their pilot
-> exit criteria. The tool lives in the **RE-Blend** tab of Blender's N-panel. See
-> [`ROADMAP.md`](ROADMAP.md) for milestone status.
+> **Status:** the first device built with it (Skou) has shipped. M0 passed against the real SDK
+> toolchain; M1 (import, rigs, batch render, validation), M2 (two-way sync, preview & QA) and
+> M3 (headless CLI, dirty rendering, palette and material kit) are implemented and tested,
+> with their exit checks run on the build machine. The tool lives in the **RE-Blend** tab of
+> Blender's N-panel. See [`ROADMAP.md`](ROADMAP.md) for milestone status.
 
 > **Agents start here:** [`AGENTS.md`](AGENTS.md) explains how to drive RE Bench and RE-Blend
 > and summarises the SDK rules a device must follow, without needing the SDK itself.
@@ -27,6 +27,7 @@ blockout shapes.
 
 ```sh
 python3 -m rebench new ../MyFx --name "Grit Distortion" --manufacturer "Terp Audio"
+python3 -m rebench new ../MySynth --name "Tiny Synth" --manufacturer "Terp Audio" --template instrument
 python3 -m rebench serve ../MyFx        # browser canvas on http://127.0.0.1:8765/
 python3 -m rebench check ../MyFx        # every rule, exit 1 on errors
 python3 -m rebench mcp --project ../MyFx  # the same operations for AI agents
@@ -80,8 +81,17 @@ RE-Blend's answer is to prevent these mismatches:
   playback for sweep smoothness, and one-click RE2DRender / RE2DPreview launch.
 - **Validate the contract** *(landed, M1)*: missing art, orphan art, frame-count mismatches, 
   wrong PNG dimensions, case mismatches in paths, alpha bleed, etc.
-- **Run headless** *(planned, M3)*: `blender -b` drives the same operators with a non-zero exit
-  code on validation errors.
+- **Run headless** *(landed, M3)*: `blender -b scene.blend --python-expr "import reblend;
+  reblend.cli()" -- render --dirty --project <root> --validate` renders only the sheets whose
+  inputs changed (a hash manifest in `GUI2D/`), validates, and exits non-zero on errors. The
+  Render panel runs the same in a background Blender with progress and Cancel.
+- **One rule engine** *(landed)*: Validate runs the same panel rules as `rebench check`: fold
+  arrow, rack ears and screws, bypass corner, text size, routing icons, SDK part sizes, fader
+  direction, frame contracts.
+- **Palette, materials and light** *(landed, M3)*: load the project palette into a node group,
+  start materials from brushed or anodised metal, dark glass, plastic or knurl, add a studio
+  lighting rig (and save your own as a template), and split emission into a working strip for
+  2D glow compositing.
 - **Start a greenfield device**: `rebench new` writes a template project with grey-box art,
   and import turns its sidecar into sized guide boxes and blockout meshes.
 
@@ -187,12 +197,12 @@ and anything C++. It interoperates with [RE Edit](https://github.com/pongasoft/r
 than replacing it: both tools read and write the same two layout files, and files RE-Blend
 patches must keep loading in RE Edit (and of course all SDK-tools).
 
-## Planned platform
+## Platform
 
-A standalone **Blender 4.2 LTS+ extension** (pure Python, shipped via `blender_manifest.toml`,
-which allows bundling wheels — `lupa` for reading the Lua config; `numpy` already ships with
-Blender). No compiled RE-Blend code, no SDK code or assets bundled. SDK tool paths are a
-per-machine setting and never end up in your repo.
+A standalone **Blender 4.2 LTS+ extension** (pure Python). `python3 tools/package.py` builds one
+zip per platform with the `lupa` wheels bundled (`numpy` already ships with Blender). No
+compiled RE-Blend code, no SDK code or assets bundled. SDK tool paths are a per-machine setting
+and never end up in your repo.
 
 ## License
 

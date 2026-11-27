@@ -113,13 +113,16 @@ TOOLS = [
     },
     {
         "name": "project_new",
-        "description": "Create a new device from the effect template (stereo creative_fx, one "
-                       "Level knob, bypass fader, jacks, re-cmake build, gain-stage C++) with "
-                       "grey-box art. target must not exist or be empty.",
+        "description": "Create a new device from a template with grey-box art: 'effect' "
+                       "(stereo creative_fx, one Level knob, bypass fader, jacks, re-cmake "
+                       "build, gain-stage C++) or 'instrument' (note-playing sine voice, "
+                       "Level knob, outputs). target must not exist or be empty.",
         "inputSchema": {"type": "object", "properties": {
             "target": {"type": "string"}, "name": {"type": "string"},
             "manufacturer": {"type": "string"}, "height_ru": {"type": "integer", "default": 1},
             "product_id": {"type": "string"}, "sdk": {"type": "string"},
+            "template": {"type": "string", "enum": ["effect", "instrument"],
+                         "default": "effect"},
         }, "required": ["target", "name", "manufacturer"]},
     },
 ]
@@ -134,7 +137,7 @@ def _call(name: str, args: dict, default_root: str | None) -> dict:
         return {"content": [_text(agent.project_new(
             args["target"], args["name"], args["manufacturer"],
             height_ru=int(args.get("height_ru", 1)), product_id=args.get("product_id", ""),
-            sdk_root=args.get("sdk")))]}
+            template=args.get("template", "effect"), sdk_root=args.get("sdk")))]}
     root = args.get("project") or default_root
     if not root:
         raise ValueError("no project: pass 'project' or start the server with --project")
