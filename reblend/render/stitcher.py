@@ -16,7 +16,8 @@ from typing import Sequence
 
 import numpy as np
 
-__all__ = ["StitchError", "stitch", "unpremultiply", "split_strip", "frame_height"]
+__all__ = ["emission_layer", "StitchError", "stitch", "unpremultiply", "split_strip", "frame_height",
+           "crop_frames", "alpha_floor"]
 
 
 class StitchError(Exception):
@@ -74,4 +75,54 @@ def unpremultiply(pixels: np.ndarray) -> np.ndarray:
     out = pixels.copy()
     np.divide(pixels[..., :3], alpha, out=out[..., :3], where=alpha > 0.0)
     np.clip(out[..., :3], 0.0, 1.0, out=out[..., :3])
+    return out
+
+
+def crop_frames(frames: Sequence[np.ndarray], rect: tuple[int, int, int, int]
+                ) -> list[np.ndarray]:
+    """Cut the same ``(x, y, w, h)`` rectangle out of every frame (a derived
+    sheet, Skou feedback #38). Refuses a rectangle outside the frame."""
+    x, y, w, h = (int(v) for v in rect)
+    if not frames:
+        raise StitchError("no frames to crop")
+    fh, fw = frames[0].shape[0], frames[0].shape[1]
+    if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > fw or y + h > fh:
+        raise StitchError(f"crop {[x, y, w, h]} does not fit inside a {fw}x{fh} frame")
+    return [np.ascontiguousarray(f[y:y + h, x:x + w]) for f in frames]
+
+
+def emission_layer(lit: np.ndarray, base: np.ndarray) -> np.ndarray:
+    """The glow a compositing app adds back over ``base`` (design §5.6).
+
+    Both are straight-alpha ``(H, W, 4)`` float frames of the same element,
+    rendered with emission on (``lit``) and off (``base``). The result is an
+    opaque layer, black where nothing glows, holding the premultiplied
+    difference: in an 8-bit sRGB document, ``base`` plus this layer in Add
+    (Linear Dodge) mode gives back ``lit`` wherever emission only brightens.
+    """
+    if lit.shape != base.shape:
+        raise StitchError(f"lit {lit.shape} and base {base.shape} frames differ in size")
+    lit_p = lit[..., :3] * lit[..., 3:4]
+    base_p = base[..., :3] * base[..., 3:4]
+    out = np.ones_like(lit)
+    out[..., :3] = np.clip(lit_p - base_p, 0.0, 1.0)
+    return out
+
+
+def alpha_floor(pixels: np.ndarray, floor: float) -> np.ndarray:
+    """Remove a faint alpha haze: coverage below ``floor`` becomes 0 and the
+    rest is stretched back to 0..1 (Skou feedback #19).
+
+    A shadow catcher picks up 2 to 6 % alpha from ambient occlusion across the
+    whole frame, so the sheet's rectangle shows as a faint edge on the panel.
+    Straight alpha means colour is untouched; only coverage changes.
+    """
+    if floor <= 0.0:
+        return pixels
+    if floor >= 1.0:
+        raise StitchError("alpha floor must be below 1")
+    out = np.array(pixels, dtype=np.float32, copy=True)
+    alpha = out[..., 3]
+    alpha[:] = np.clip((alpha - floor) / (1.0 - floor), 0.0, 1.0)
+    out[..., :3][alpha <= 0.0] = 0.0
     return out

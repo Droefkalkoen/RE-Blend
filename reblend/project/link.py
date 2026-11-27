@@ -32,8 +32,10 @@ from .lua_reader import (
 )
 from .motherboard_reader import read_motherboard_steps
 from .png_meta import PngError, read_png_meta
+from .sidecar import Sidecar
 
-__all__ = ["GUI2D_DIRNAME", "ElementSpec", "ProjectLink", "derive_specs", "load_project"]
+__all__ = ["GUI2D_DIRNAME", "ElementSpec", "ProjectLink", "derive_specs", "load_project",
+           "size_specs"]
 
 GUI2D_DIRNAME = "GUI2D"
 MOTHERBOARD_FILENAME = "motherboard_def.lua"
@@ -45,7 +47,12 @@ class ElementSpec:
 
     ``frame_w``/``frame_h`` are 0 when unknown — an existing sheet on disk
     fills them in (dimensions ÷ frames); otherwise the designer decides them
-    in Blender and validation nags until they're set.
+    in Blender and validation nags until they're set. A size set in RE Bench's
+    sidecar (``GUI2D/rebench.json``) wins over the sheet on disk, which only
+    says what the last render produced.
+
+    ``shape`` is the sidecar's blockout shape (``{"type": "knob", ...}``),
+    empty when the bench never set one; import uses it for blockout geometry.
     """
 
     path: str
@@ -55,6 +62,15 @@ class ElementSpec:
     frame_h: int = 0
     placements: tuple[schema.Placement, ...] = ()
     widget_kinds: tuple[str, ...] = ()
+    shape: dict = field(default_factory=dict)
+    #: A widget on this sheet drives the device's On/Off/Bypass switch, so
+    #: its frames mean Off, On, Bypass (state names follow).
+    onoffbypass: bool = False
+    #: A derived sheet (sidecar ``derive_from``): cut from this other sprite's
+    #: frames by the renderer, so no scene element produces it directly.
+    derived_from: str = ""
+    #: ``(x, y, w, h)`` crop in the source's frame px, for a derived sheet.
+    crop: tuple[int, int, int, int] | None = None
 
     @property
     def node(self) -> str:
@@ -92,12 +108,25 @@ class ProjectLink:
     #: property path -> steps, from motherboard_def.lua (best effort; empty
     #: when the file is absent or unreadable — validation degrades gracefully).
     property_steps: dict[str, int] = field(default_factory=dict)
+    #: ``GUI2D/rebench.json`` (empty when the project has none).
+    sidecar: Sidecar = field(default_factory=Sidecar)
 
     def spec(self, path: str) -> ElementSpec | None:
         for candidate in self.specs:
             if candidate.path == path:
                 return candidate
         return None
+
+    @property
+    def scene_specs(self) -> list[ElementSpec]:
+        """The specs a Blender scene builds elements for: derived sheets are
+        written by the renderer from their source, not modelled."""
+        return [spec for spec in self.specs if not spec.derived_from]
+
+    @property
+    def derived(self) -> dict[str, ElementSpec]:
+        """Derived sheets by sprite path."""
+        return {spec.path: spec for spec in self.specs if spec.derived_from}
 
 
 def load_project(root: Path | str) -> ProjectLink:
@@ -108,8 +137,8 @@ def load_project(root: Path | str) -> ProjectLink:
     hdgui = read_hdgui_2d(gui2d / "hdgui_2D.lua")
 
     specs = derive_specs(device, hdgui)
-    for spec in specs:
-        _probe_frame_size(spec, gui2d)
+    sidecar = Sidecar.load(root)
+    size_specs(specs, gui2d, sidecar)
 
     property_steps: dict[str, int] = {}
     motherboard = root / MOTHERBOARD_FILENAME
@@ -126,6 +155,7 @@ def load_project(root: Path | str) -> ProjectLink:
         hdgui=hdgui,
         specs=specs,
         property_steps=property_steps,
+        sidecar=sidecar,
     )
 
 
@@ -183,9 +213,36 @@ def _walk(
             spec.widget_kinds = spec.widget_kinds + tuple(
                 w for w, _ in widgets if w not in spec.widget_kinds
             )
+            if any(str(attrs.get("value", "")).endswith("/builtin_onoffbypass")
+                   for _w, attrs in widgets):
+                spec.onoffbypass = True
 
     for child_name in sorted(node.children):
         _walk(by_path, hdgui, backdrop_nodes, panel, node.children[child_name], x, y)
+
+
+def size_specs(specs: list[ElementSpec], gui2d_dir: Path, sidecar: Sidecar) -> None:
+    """Frame sizes and blockout shapes: the sidecar's first, else the PNG's."""
+    for spec in specs:
+        info = sidecar.sprites.get(spec.path)
+        if info and info.frame_w > 0 and info.frame_h > 0:
+            spec.frame_w, spec.frame_h = int(info.frame_w), int(info.frame_h)
+        else:
+            _probe_frame_size(spec, gui2d_dir)
+        if info and info.shape:
+            spec.shape = dict(info.shape)
+    by_path = {spec.path: spec for spec in specs}
+    for spec in specs:
+        info = sidecar.sprites.get(spec.path)
+        if not info or not info.derive_from:
+            continue
+        spec.derived_from = info.derive_from
+        source = by_path.get(info.derive_from)
+        source_info = sidecar.sprites.get(info.derive_from)
+        sw = source.frame_w if source else (source_info.frame_w if source_info else 0)
+        sh = source.frame_h if source else (source_info.frame_h if source_info else 0)
+        spec.crop = info.derived_rect(sw, sh)
+        spec.frame_w, spec.frame_h = spec.crop[2], spec.crop[3]
 
 
 def _probe_frame_size(spec: ElementSpec, gui2d_dir: Path) -> None:

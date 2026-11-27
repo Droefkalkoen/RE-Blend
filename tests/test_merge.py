@@ -1,5 +1,7 @@
 """Re-import merge diff (§6.1): added / removed / changed detection."""
 
+import dataclasses
+
 import pytest
 
 from reblend.model.schema import ElementData, Placement
@@ -103,3 +105,14 @@ def test_kind_change_is_reported(project):
 def test_elements_without_a_path_are_ignored(project):
     elements = scene_elements(project) + [ElementData(node="x", path="")]
     assert merge.diff_link(project.specs, elements) == []
+
+
+def test_a_designer_set_frame_size_is_never_offered_as_theirs(project):
+    # Skou feedback #3: after a resize, the PNG on disk still has the old size;
+    # Apply Choices must not propose (and so revert to) that stale size.
+    specs = [dataclasses.replace(spec, frame_w=60, frame_h=60) for spec in project.specs]
+    elements = [spec.to_element_data() for spec in specs]
+    for element in elements:
+        element.derived_placements = element.placements
+        element.frame_w, element.frame_h = 70, 65
+    assert merge.diff_link(specs, elements) == []

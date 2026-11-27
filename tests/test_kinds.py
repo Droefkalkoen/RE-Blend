@@ -38,8 +38,9 @@ def test_stepping_buttons_are_two_frame_buttons_not_selectors():
     count is — a radio group of N values is N two-frame widgets, one per
     `index`, not a single N-frame sheet.
     """
+    assert kinds.kind_for_node([("step_button", {})], 2) == kinds.BUTTON_MOMENTARY
+    assert kinds.kind_for_node([("radio_button", {})], 2) == kinds.BUTTON_RADIO
     for widget in ("step_button", "radio_button"):
-        assert kinds.kind_for_node([(widget, {})], 2) == kinds.BUTTON_MOMENTARY
         rule = kinds.frame_rule_for_widget(widget)
         assert rule.allowed == (2,)
         assert not rule.steps_bound

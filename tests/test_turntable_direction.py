@@ -1,0 +1,70 @@
+"""Knob driver direction (Skou feedback #17): frame 0 at the minimum, about
+7 o'clock, turning clockwise on screen as the frame rises, for any camera axis."""
+
+import math
+
+import pytest
+
+from reblend.model import calibration as cal
+
+
+def _rot(index, angle, v):
+    c, s = math.cos(angle), math.sin(angle)
+    x, y, z = v
+    if index == 0:
+        return (x, y * c - z * s, y * s + z * c)
+    if index == 1:
+        return (x * c + z * s, y, -x * s + z * c)
+    return (x * c - y * s, x * s + y * c, z)
+
+
+# For each camera axis (panel -> viewer): the world "up" and "right" the viewer sees.
+_VIEWS = {
+    "neg_y": ((0, 0, 1), (1, 0, 0)),   # Blender front view
+    "pos_y": ((0, 0, 1), (-1, 0, 0)),  # back view
+    "pos_z": ((0, 1, 0), (1, 0, 0)),   # top view
+    "neg_z": ((0, 1, 0), (-1, 0, 0)),  # bottom view
+    "pos_x": ((0, 0, 1), (0, 1, 0)),   # right view
+    "neg_x": ((0, 0, 1), (0, -1, 0)),  # left view
+}
+
+
+def _clock_deg(axis_name, frame, frames=61, zero_deg=0.0):
+    """Screen angle of a pointer modelled ``zero_deg`` clockwise of 12 o'clock."""
+    up, right = _VIEWS[axis_name]
+    index, expr = cal.turntable_expression(frames, 300.0, cal.axis_vector(axis_name),
+                                           zero_deg=zero_deg)
+    angle = eval(expr, {"radians": math.radians, "frame": frame})
+    # The modelled pointer: "up" turned zero_deg clockwise on screen.
+    z = math.radians(zero_deg)
+    start = tuple(u * math.cos(z) + r * math.sin(z) for u, r in zip(up, right))
+    p = _rot(index, angle, start)
+    sx = sum(a * b for a, b in zip(p, right))
+    sy = sum(a * b for a, b in zip(p, up))
+    return math.degrees(math.atan2(sx, sy))
+
+
+@pytest.mark.parametrize("axis_name", sorted(_VIEWS))
+def test_frame0_at_seven_oclock_and_clockwise(axis_name):
+    assert _clock_deg(axis_name, 0) == pytest.approx(-150.0)
+    assert _clock_deg(axis_name, 30) == pytest.approx(0.0, abs=1e-9)
+    assert _clock_deg(axis_name, 60) == pytest.approx(150.0)
+    assert _clock_deg(axis_name, 31) > _clock_deg(axis_name, 30)
+
+
+def test_default_axis_matches_the_pilots_hand_fix():
+    index, expr = cal.turntable_expression(61)
+    assert index == 1
+    assert expr == "radians(1.0 * (-150.0 + 300.0 * frame / 60))"
+
+
+def test_needs_two_frames():
+    with pytest.raises(ValueError):
+        cal.turntable_expression(1)
+
+
+@pytest.mark.parametrize("axis_name", sorted(_VIEWS))
+def test_pointer_at_rest_is_compensated(axis_name):
+    """#18: a pointer modelled 5.35 degrees clockwise still points up mid-sweep."""
+    assert _clock_deg(axis_name, 30, zero_deg=5.35) == pytest.approx(0.0, abs=1e-9)
+    assert _clock_deg(axis_name, 0, zero_deg=5.35) == pytest.approx(-150.0)

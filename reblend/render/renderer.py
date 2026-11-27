@@ -30,7 +30,8 @@ from ..project.png_meta import read_png_meta
 from ..project.validation import ERROR, WARNING, Finding
 from . import bpy_io, shadows, stitcher, validators
 
-__all__ = ["RenderResult", "RenderError", "render_element", "render_elements"]
+__all__ = ["RenderResult", "RenderError", "RenderOptions", "render_element",
+           "render_elements", "reload_changed_images"]
 
 #: World axis an element camera looks along (§4.4 convention: the panel faces
 #: −Y, so the camera sits on the −Y side looking towards +Y).
@@ -42,10 +43,33 @@ class RenderError(Exception):
 
 
 @dataclass
+class RenderOptions:
+    """Render settings beyond the isolation mode (Skou feedback #12-#14, #19, #38)."""
+
+    #: Shadow-only casters keep lighting their neighbours: only camera
+    #: visibility is dropped, so an isolated part still reflects the panel and
+    #: gets bounce light instead of seeing the bare HDRI (#12).
+    caster_bounce: bool = False
+    #: Elements on other panels sit the render out entirely: all panels share
+    #: one world origin, so back-panel geometry would otherwise shadow or
+    #: reflect into front renders (#13).
+    panel_isolation: bool = False
+    #: Coverage below this becomes 0 and the rest is stretched to 0..1, to
+    #: clear a shadow catcher's ambient haze (#19). 0 = off.
+    alpha_floor: float = 0.0
+    #: source sprite path -> [(derived path, (x, y, w, h))] (#38).
+    derived: dict = field(default_factory=dict)
+
+
+@dataclass
 class RenderResult:
     element: str
     strip_path: Path | None = None
     findings: list[Finding] = field(default_factory=list)
+    #: Derived sheets written from this element's frames.
+    derived_paths: list[Path] = field(default_factory=list)
+    #: The emission-only working strip (``re_emission_pass``, §5.6).
+    emission_path: Path | None = None
 
     @property
     def ok(self) -> bool:
@@ -145,6 +169,9 @@ def render_elements(
     ppb: float = calibration.DEFAULT_PPB,
     inactive_render: str = INACTIVE_SHADOW,
     view_axis: "Vector | tuple | None" = None,
+    options: RenderOptions | None = None,
+    progress=None,
+    cancelled=None,
 ) -> list[RenderResult]:
     """Render several elements' sheets; one element's failure stops nobody else.
 
@@ -154,9 +181,19 @@ def render_elements(
     Reason fixes, and bounds-only widgets whose graphics Reason uses purely
     as a text box or hit area. Each skip is reported so it is visible in the
     panel rather than looking like a silently missing sheet.
+
+    ``progress(done, total, name)`` is called before each element and once at
+    the end; ``cancelled()`` returning True stops before the next element
+    (the background render's Cancel, Skou feedback #14/#39).
     """
     results = []
-    for collection in collections:
+    reload_changed_images()
+    total = len(collections)
+    for index, collection in enumerate(collections):
+        if cancelled is not None and cancelled():
+            break
+        if progress is not None:
+            progress(index, total, collection.name)
         skip = _skip_reason(collection)
         if skip is not None:
             results.append(
@@ -173,6 +210,7 @@ def render_elements(
                 render_element(
                     scene, collection, out_dir, ppb=ppb,
                     inactive_render=inactive_render, view_axis=view_axis,
+                    options=options,
                 )
             )
         except RenderError as exc:
@@ -182,6 +220,8 @@ def render_elements(
                     findings=[Finding(ERROR, "render", str(exc), subject=collection.name)],
                 )
             )
+    if progress is not None:
+        progress(len(results), total, "")
     return results
 
 
@@ -192,8 +232,10 @@ def render_element(
     ppb: float = calibration.DEFAULT_PPB,
     inactive_render: str = INACTIVE_SHADOW,
     view_axis: "Vector | tuple | None" = None,
+    options: RenderOptions | None = None,
 ) -> RenderResult:
     """Render one element collection to ``<out_dir>/<re_path>.png``."""
+    options = options or RenderOptions()
     data = schema.props_to_data(collection)
     if not data.path:
         raise RenderError(f"collection '{collection.name}' has no re_path")
@@ -206,21 +248,33 @@ def render_element(
 
     registration = _find_registration(collection)
     result = RenderResult(element=data.path)
-    plan = _isolation_plan(scene, collection, data, inactive_render)
+    plan = _isolation_plan(scene, collection, data, inactive_render,
+                           panel_isolation=options.panel_isolation)
     _warn_plan(result, scene, plan, data)
 
     axis = Vector(view_axis) if view_axis is not None else VIEW_AXIS
-    with _element_scene_state(scene, plan):
+    split_emission = bool(collection.get("re_emission_pass", False))
+    lit: list[np.ndarray] = []
+    with _element_scene_state(scene, plan, caster_bounce=options.caster_bounce):
         camera = _make_camera(scene, data, registration, ppb, axis)
         try:
-            _configure_render(scene, data)
+            _configure_render(scene, data, samples=int(collection.get("re_samples", 0)))
             with tempfile.TemporaryDirectory(prefix="reblend_") as scratch:
                 frame_paths = _render_frames(scene, data, Path(scratch))
                 frames = [bpy_io.load_raw_pixels(p) for p in frame_paths]
+                if split_emission:
+                    lit = frames
+                    base_dir = Path(scratch) / "base"
+                    base_dir.mkdir()
+                    with emission_off(collection.all_objects):
+                        frame_paths = _render_frames(scene, data, base_dir)
+                    frames = [bpy_io.load_raw_pixels(p) for p in frame_paths]
         finally:
             _remove_camera(camera)
 
-    _validate_frames(result, frames)
+    if options.alpha_floor > 0.0:
+        frames = [stitcher.alpha_floor(f, options.alpha_floor) for f in frames]
+    _validate_frames(result, frames, data)
     strip = stitcher.stitch(frames)
 
     out_dir = Path(out_dir)
@@ -229,13 +283,142 @@ def render_element(
     bpy_io.save_strip(strip, strip_path, name=f"reblend_{data.path}")
     result.strip_path = strip_path
     _verify_written(result, strip_path, data)
+
+    if split_emission:
+        # A working file for the compositing app, never a GUI2D sheet (§5.6).
+        emission_dir = out_dir.parent / "Design" / "emission"
+        emission_dir.mkdir(parents=True, exist_ok=True)
+        path = emission_dir / f"{data.path}_emission.png"
+        layers = [stitcher.emission_layer(l, b) for l, b in zip(lit, frames)]
+        bpy_io.save_strip(stitcher.stitch(layers), path, name=f"reblend_{data.path}_emission")
+        result.emission_path = path
+
+    for derived_path, rect in options.derived.get(data.path, ()):
+        try:
+            cut = stitcher.crop_frames(frames, rect)
+        except stitcher.StitchError as exc:
+            result.findings.append(Finding(ERROR, "derived", str(exc), subject=derived_path))
+            continue
+        path = out_dir / f"{derived_path}.png"
+        bpy_io.save_strip(stitcher.stitch(cut), path, name=f"reblend_{derived_path}")
+        result.derived_paths.append(path)
+        derived_data = schema.ElementData(
+            node=derived_path, path=derived_path, kind=data.kind, frames=data.frames,
+            frame_w=int(rect[2]), frame_h=int(rect[3]))
+        _verify_written(result, path, derived_data)
     return result
+
+
+#: Shader inputs that carry emission strength, by node type.
+_EMISSION_INPUTS = {
+    "BSDF_PRINCIPLED": "Emission Strength",
+    "EMISSION": "Strength",
+}
+
+
+def _emission_sockets(tree, seen=None):
+    """(tree, node, socket) for every emission-strength input, groups included."""
+    seen = set() if seen is None else seen
+    if tree is None or tree.as_pointer() in seen:
+        return
+    seen.add(tree.as_pointer())
+    for node in tree.nodes:
+        name = _EMISSION_INPUTS.get(node.type)
+        if name and name in node.inputs:
+            yield tree, node, node.inputs[name]
+        if node.type == "GROUP":
+            yield from _emission_sockets(node.node_tree, seen)
+
+
+def _action_fcurves(action):
+    from ..model.rigs import _fcurves  # 4.2 actions and 4.4+ layered actions
+
+    return _fcurves(action)
+
+
+class emission_off:
+    """Context manager: every emission strength on these objects' materials is
+    0, with its animation and drivers muted, and restored on exit (§5.6).
+
+    A linked strength input is unlinked for the duration and relinked after,
+    so a glow driven by a node chain goes dark too."""
+
+    def __init__(self, objects) -> None:
+        self.objects = list(objects)
+        self._values = []
+        self._links = []
+        self._muted = []
+
+    def __enter__(self):
+        trees = []
+        for obj in self.objects:
+            for slot in getattr(obj, "material_slots", ()):
+                material = slot.material
+                if material is not None and material.node_tree is not None \
+                        and material.node_tree not in trees:
+                    trees.append(material.node_tree)
+        seen: set = set()
+        for top in trees:
+            for tree, node, socket in _emission_sockets(top, seen):
+                for link in list(socket.links):
+                    self._links.append((tree, link.from_socket, socket))
+                    tree.links.remove(link)
+                self._values.append((socket, socket.default_value))
+                socket.default_value = 0.0
+                path = f'nodes["{node.name}"].inputs[{list(node.inputs).index(socket)}].default_value'
+                index = list(node.inputs).index(socket)
+                paths = {path, path.replace(f"[{index}]", f'["{socket.identifier}"]')}
+                anim = tree.animation_data
+                action = getattr(anim, "action", None)
+                curves = list(_action_fcurves(action)) if action is not None else []
+                curves += list(getattr(anim, "drivers", None) or ())
+                for fc in curves:
+                    if fc.data_path in paths and not fc.mute:
+                        fc.mute = True
+                        self._muted.append(fc)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for fc in self._muted:
+            fc.mute = False
+        for socket, value in self._values:
+            socket.default_value = value
+        for tree, from_socket, to_socket in self._links:
+            tree.links.new(from_socket, to_socket)
+
+
+def reload_changed_images() -> list[str]:
+    """Reload file-backed images whose file changed since Blender read it
+    (Skou feedback #32: a silkscreen edited in Photoshop rendered stale).
+
+    The file's mtime is remembered on the image (``re_mtime``); an image
+    seen for the first time is reloaded once, which is cheap and certain.
+    Returns the names of the images reloaded.
+    """
+    import os
+
+    reloaded = []
+    for image in bpy.data.images:
+        if image.source not in {"FILE", "SEQUENCE", "TILED"} or image.packed_file:
+            continue
+        path = bpy.path.abspath(image.filepath)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if float(image.get("re_mtime", -1.0)) != mtime:
+            image.reload()
+            image["re_mtime"] = mtime
+            reloaded.append(image.name)
+    return reloaded
 
 
 # ---------------------------------------------------------------------------
 # scene state push/pop
 # ---------------------------------------------------------------------------
 
+#: Cycles sample count, overridden per element by ``re_samples`` (#14).
+_CYCLES_ATTRS = ("samples",)
 _RENDER_ATTRS = (
     "resolution_x",
     "resolution_y",
@@ -256,11 +439,15 @@ _SHADOW_ONLY_OFF = (
     "visible_transmission",
     "visible_volume_scatter",
 )
+#: The "shadows + bounce" caster (Skou feedback #12): hidden from the camera
+#: only, so neighbours still reflect into and bounce light onto the element.
+_BOUNCE_CASTER_OFF = ("visible_camera",)
 #: Everything an object-level role touches, so the restore covers all of it.
 _OBJ_ATTRS = _SHADOW_ONLY_OFF + ("visible_shadow", "is_shadow_catcher")
 
 
-def _isolation_plan(scene, active_collection, data, inactive_render):
+def _isolation_plan(scene, active_collection, data, inactive_render,
+                    panel_isolation: bool = False):
     """``[(collection, role)]`` for every collection in the isolation set.
 
     The active element and its context collection render normally; what each
@@ -269,16 +456,33 @@ def _isolation_plan(scene, active_collection, data, inactive_render):
     shadow owners on both sides.
     """
     active_owner = data.shadow_owner
+    active_panels = set(data.panels)
     plan = []
     for c in _element_collections(scene):
         if c is active_collection or _is_context_of(c, active_collection):
             plan.append((c, shadows.ROLE_VISIBLE))
+            continue
+        if panel_isolation and active_panels and not (_panels_of(c) & active_panels):
+            plan.append((c, shadows.ROLE_HIDDEN))
             continue
         kind, owner = _shadow_facts(c)
         plan.append(
             (c, shadows.sibling_role(active_owner, kind, owner, inactive_render))
         )
     return plan
+
+
+def _panels_of(collection) -> set[str]:
+    """The panels an element (or an element's context collection) is on."""
+    if not schema.is_element(collection) and collection.name.endswith(" context"):
+        owner = bpy.data.collections.get(collection.name[: -len(" context")])
+        if owner is None:
+            return set()
+        collection = owner
+    try:
+        return set(schema.props_to_data(collection).panels)
+    except (KeyError, ValueError):
+        return set()
 
 
 def _shadow_facts(collection) -> tuple[str, str]:
@@ -298,7 +502,7 @@ def _shadow_facts(collection) -> tuple[str, str]:
 
 
 @contextlib.contextmanager
-def _element_scene_state(scene, plan):
+def _element_scene_state(scene, plan, caster_bounce: bool = False):
     """Push everything the render touches; pop it however rendering ends.
 
     ``plan`` is the ``(collection, role)`` list from :func:`_isolation_plan`;
@@ -309,6 +513,8 @@ def _element_scene_state(scene, plan):
     saved_image = {a: getattr(scene.render.image_settings, a) for a in _IMAGE_ATTRS}
     saved_view = {a: getattr(scene.view_settings, a) for a in _VIEW_ATTRS}
     saved_display = scene.display_settings.display_device
+    cycles = getattr(scene, "cycles", None)
+    saved_cycles = {a: getattr(cycles, a) for a in _CYCLES_ATTRS if hasattr(cycles, a)}
     saved_camera = scene.camera
     saved_frame = scene.frame_current
 
@@ -324,7 +530,7 @@ def _element_scene_state(scene, plan):
                     continue
                 saved_vis[obj.name] = {a: getattr(obj, a) for a in _OBJ_ATTRS}
                 if role == shadows.ROLE_CASTER:
-                    for attr in _SHADOW_ONLY_OFF:
+                    for attr in (_BOUNCE_CASTER_OFF if caster_bounce else _SHADOW_ONLY_OFF):
                         setattr(obj, attr, False)
                     obj.visible_shadow = True
                 else:  # CATCHER: transparent except where the shadow lands.
@@ -347,6 +553,8 @@ def _element_scene_state(scene, plan):
         for attr, value in saved_view.items():
             setattr(scene.view_settings, attr, value)
         scene.display_settings.display_device = saved_display
+        for attr, value in saved_cycles.items():
+            setattr(cycles, attr, value)
         scene.camera = saved_camera
         scene.frame_set(saved_frame)
 
@@ -413,7 +621,7 @@ def _remove_camera(camera) -> None:
     bpy.data.cameras.remove(cam_data)
 
 
-def _configure_render(scene, data: schema.ElementData) -> None:
+def _configure_render(scene, data: schema.ElementData, samples: int = 0) -> None:
     """The correctness-critical block (§5.2, risk §10.1) — every line defends
     one M0 failure mode; change nothing without a reason you can name."""
     render = scene.render
@@ -430,6 +638,9 @@ def _configure_render(scene, data: schema.ElementData) -> None:
     scene.view_settings.exposure = 0.0
     scene.view_settings.gamma = 1.0
     scene.display_settings.display_device = "sRGB"
+    cycles = getattr(scene, "cycles", None)
+    if samples > 0 and cycles is not None and hasattr(cycles, "samples"):
+        cycles.samples = samples  # per-element override; restored afterwards
 
 
 def _render_frames(scene, data: schema.ElementData, scratch: Path) -> list[Path]:
@@ -448,7 +659,16 @@ def _render_frames(scene, data: schema.ElementData, scratch: Path) -> list[Path]
 # ---------------------------------------------------------------------------
 
 
-def _validate_frames(result: RenderResult, frames: list[np.ndarray]) -> None:
+#: Kinds whose art is meant to fill its frame edge to edge (a panel backdrop,
+#: a display window), so alpha at the border is the design, not a bleed
+#: (Skou feedback #10).
+FULL_BLEED_KINDS = frozenset({kinds.BACKDROP, kinds.DISPLAY})
+
+
+def _validate_frames(result: RenderResult, frames: list[np.ndarray],
+                     data: "schema.ElementData | None" = None) -> None:
+    if data is not None and (data.kind in FULL_BLEED_KINDS or data.full_bleed):
+        return
     for index in validators.overflow_frames(frames):
         result.findings.append(
             Finding(

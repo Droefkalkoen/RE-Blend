@@ -68,6 +68,15 @@ the M0 multiples-of-5 rule enforced in `render/validators.py`). What remains is 
 the pilot: import the pilot project, model into the imported boxes, and get the phase-1 sheet
 list through Render All Sheets + Validate with zero errors on a machine with Blender 4.2 LTS+.
 
+**Exit check run, 2026-11-15** (on a copy of the pilot, `main` at `d2131f2`, Blender 5.2
+background process): all 31 sheets rendered with no render errors (43.5 min) and RE2DRender
+compiled the result cleanly, but Validate reported **3 errors**, all from the pilot's `.blend`
+lagging its Lua rather than from RE-Blend: two sheets with no element yet (`sel_polarity`,
+`fader_onoffbypass_folded`) and that folded fader's node overhanging the 150 px folded panel.
+Next: a Check for Differences / Apply Choices pass on the pilot's `.blend`, then re-run. The
+run also surfaced false `shadow-owner` errors on the first Validate after loading a file,
+fixed on `develop` (hidden state objects were sampled at their stale saved position).
+
 Worth saying out loud: the MVP is already useful. Even without write-back, "model in the boxes,
 press render, get correct sheets" replaces the entire manual crop-and-stack workflow.
 
@@ -100,6 +109,12 @@ decoys, single-line nodes, quoted keys, CRLF) — every patch must round-trip th
 Lua interpreter byte-exact outside the edited literals. What remains is the pilot pass: move a
 control, export, and confirm in RE2DPreview and RE Edit on a machine with Blender 4.2 LTS+.
 
+**Exit check run, 2026-11-15** (same pilot copy): moving `meter_input` +20 px in Blender and
+running Write Layout to Lua patched exactly one line of `device_2D.lua`
+(`{ 145, 175 }` → `{ 165, 175 }`), comments and layout byte-identical, verified by re-parse;
+re-checking differences no longer listed the element, and RE2DRender compiled cleanly. Still
+open: the visual confirmation in RE2DPreview, and RE Edit loading the patched file.
+
 ## M3 — Production: make it a build step
 
 - **Headless CLI** (§7): `render --all | --dirty | --element`, `validate` with a non-zero exit
@@ -111,6 +126,16 @@ control, export, and confirm in RE2DPreview and RE Edit on a machine with Blende
 
 **Done when:** the pilot project's art build runs headless on its build machine, and its docs
 can point at RE-Blend as *the* art pipeline.
+
+**Status — implementation landed (2026-11-27), exit criterion pending.** `reblend.cli()`
+(`reblend/headless.py`) runs `render --all | --dirty | --element`, `validate`,
+`export-config --patch [--dry-run]` and `status`, exits 0 / 1 / 2, and writes a JSON report;
+`GUI2D/reblend-manifest.json` keeps a hash per sheet and per element input, so `--dirty`
+renders only what changed. The Render panel can run the same in a background Blender with
+progress and Cancel. The palette loader, five material starters, the lighting rig with
+save/append as a template, and the emission pass (base sheet plus a glow strip under
+`Design/emission/`) are in. All of it is tested against the `bpy` module with Cycles; the
+exit check is a headless art build of a device on the build machine.
 
 ## M4 — Library & layout editing
 
@@ -125,12 +150,25 @@ can point at RE-Blend as *the* art pipeline.
 **Done when:** a brand-new, empty RE gets from blank scene to previewable panel without
 hand-editing Lua or leaving Blender.
 
+## RE Bench and the Skou feedback
+
+Work after the pilot's art pass happened on the `develop` branch (see `CLAUDE.md`, Branches) so
+Skou kept the RE-Blend it was built with. Skou has shipped and every feedback item is done or
+by design ([`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md)). Two tracks:
+
+- **Skou feedback fixes**, triaged in [`docs/skou-feedback-triage.md`](docs/skou-feedback-triage.md):
+  bugs first, rules into the shared catalogue, the rest as RE Bench or later Blender features.
+- **RE Bench** ([`docs/rebench-design.md`](docs/rebench-design.md)): a browser layout and rules
+  bench sharing RE-Blend's pure-Python core. Its phase 3 takes over the greenfield part of M4
+  (Lua stub writing and generate mode) from outside Blender; in-viewport placement editing stays
+  M4.
+
 ## Stretch goals
 
 Not scheduled, not promised, but each one has a clear reason to exist. Roughly in order of how
 much I'd want them:
 
-- **0.5× preview toggle** in the panel compositor (§10.3). Fine grain and knurl detail alias
+- ~~**0.5× preview toggle**~~ (done: the 0.5x toggle on Preview) in the panel compositor (§10.3). Fine grain and knurl detail alias
   when RE2DRender downscales; seeing the half-size result *before* export would catch it at the
   material-tuning stage. Cheap to build, disproportionately useful.
 - **Auto frame-size from a rendered matte.** Frame size is the one number the RE Lua never

@@ -98,3 +98,71 @@ def _chunk(chunk_type: bytes, payload: bytes) -> bytes:
         + payload
         + struct.pack(">I", zlib.crc32(chunk_type + payload) & 0xFFFFFFFF)
     )
+
+
+def read_png_pixels(path: Path | str):
+    """Decode an 8-bit, non-interlaced PNG to a top-down ``(H, W, 4)`` uint8
+    RGBA array (grey, grey+alpha, RGB and RGBA; all five row filters).
+
+    Enough for reading SDK stock parts and sprite sheets outside Blender
+    (RE Bench's visible-centre alignment); refuses anything else.
+    """
+    import zlib
+
+    import numpy as np
+
+    data = Path(path).read_bytes()
+    if data[:8] != _SIGNATURE:
+        raise PngError(f"{path}: not a PNG")
+    width, height, depth, ctype, _comp, _filt, interlace = struct.unpack(">IIBBBBB", data[16:29])
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(ctype)
+    if depth != 8 or channels is None or interlace:
+        raise PngError(f"{path}: only 8-bit non-interlaced grey/RGB(A) PNGs are read here")
+    idat, i = bytearray(), 8
+    while i < len(data):
+        n = struct.unpack(">I", data[i:i + 4])[0]
+        if data[i + 4:i + 8] == b"IDAT":
+            idat += data[i + 8:i + 8 + n]
+        i += 12 + n
+    raw = np.frombuffer(zlib.decompress(bytes(idat)), dtype=np.uint8)
+    stride = width * channels
+    rows = raw.reshape(height, stride + 1)
+    out = np.zeros((height, stride), dtype=np.int32)
+    prev = np.zeros(stride, dtype=np.int32)
+    for y in range(height):
+        kind, line = rows[y, 0], rows[y, 1:].astype(np.int32)
+        if kind == 0:
+            cur = line
+        elif kind == 2:
+            cur = (line + prev) & 0xFF
+        elif kind in (1, 3, 4):
+            cur = np.zeros(stride, dtype=np.int32)
+            for x in range(stride):
+                a = cur[x - channels] if x >= channels else 0
+                b = prev[x]
+                if kind == 1:
+                    pred = a
+                elif kind == 3:
+                    pred = (a + b) >> 1
+                else:
+                    c = prev[x - channels] if x >= channels else 0
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    pred = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+                cur[x] = (line[x] + pred) & 0xFF
+        else:
+            raise PngError(f"{path}: bad filter type {kind} on row {y}")
+        out[y] = cur
+        prev = cur
+    pixels = out.reshape(height, width, channels).astype(np.uint8)
+    if channels == 4:
+        return pixels
+    rgba = np.full((height, width, 4), 255, dtype=np.uint8)
+    if channels == 1:
+        rgba[..., :3] = pixels
+    elif channels == 2:
+        rgba[..., :3] = pixels[..., :1]
+        rgba[..., 3] = pixels[..., 1]
+    else:
+        rgba[..., :3] = pixels
+    return rgba

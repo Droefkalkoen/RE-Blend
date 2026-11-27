@@ -657,12 +657,19 @@ _DEFAULT_NAMES: dict[str, tuple[tuple[str, ...], ...]] = {
         ("off", "off_held", "on", "on_held"),
     ),
     kinds.BUTTON_MOMENTARY: (("released", "held"),),
+    kinds.BUTTON_RADIO: (("off", "on"),),
     kinds.BUTTON_UPDOWN: (("neutral", "up_held", "down_held"),),
-    kinds.FADER_HANDLE: (("off", "on", "bypass"),),  # the builtin_onoffbypass case
 }
 
+#: The one fader whose frames have fixed meanings: the device's
+#: On/Off/Bypass switch (``builtin_onoffbypass``), whose values 0, 1, 2 are
+#: Off, On and Bypass. Any other stepped fader gets ``state_0…`` names
+#: (Skou feedback #11: three-way selectors were seeded off/on/bypass).
+ONOFFBYPASS_NAMES = ("off", "on", "bypass")
 
-def default_state_table(kind: str, frames: int) -> StateTable | None:
+
+def default_state_table(kind: str, frames: int,
+                        onoffbypass: bool = False) -> StateTable | None:
     """A named-but-empty table for a multi-state kind, or None for no rig.
 
     Knobs get a driver instead of states; statics, backdrops and SDK-supplied
@@ -673,7 +680,10 @@ def default_state_table(kind: str, frames: int) -> StateTable | None:
     if kinds.rig_for_kind(kind) != kinds.RIG_STATES:
         return None
     names = tuple(f"state_{i}" for i in range(frames))
-    for candidate in _DEFAULT_NAMES.get(kind, ()):
+    candidates = _DEFAULT_NAMES.get(kind, ())
+    if onoffbypass and kind == kinds.FADER_HANDLE:
+        candidates = (ONOFFBYPASS_NAMES,)
+    for candidate in candidates:
         if len(candidate) == frames:
             names = candidate
             break

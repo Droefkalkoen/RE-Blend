@@ -12,12 +12,14 @@ import bpy
 
 from ..model import kinds, schema, state_tables
 from ..project import merge, reporting
+from . import operators
 
 _SEVERITY_ICONS = {"error": "CANCEL", "warning": "ERROR"}  # ERROR = the ⚠ icon
 _KIND_ICONS = {
     "knob": "MESH_CIRCLE",
     "button_toggle": "CHECKBOX_HLT",
     "button_momentary": "RADIOBUT_ON",
+    "button_radio": "RADIOBUT_OFF",
     "button_updown": "SORT_ASC",
     "fader_handle": "ARROW_LEFTRIGHT",
     "selector": "LINENUMBERS_ON",
@@ -200,6 +202,10 @@ class REBLEND_PT_active(bpy.types.Panel):
         # through and refits the guide boxes. Nothing to resync here — a
         # draw() may not write state, dict-style assignment included.
         settings = context.scene.reblend
+        if operators.LIVE_OVERLAP["element"] == active.name and operators.LIVE_OVERLAP["message"]:
+            warn = layout.row()
+            warn.alert = True
+            warn.label(text=operators.LIVE_OVERLAP["message"], icon="ERROR")
         row = layout.row(align=True)
         row.prop(settings, "active_frame_w", text="Frame W")
         row.prop(settings, "active_frame_h", text="Frame H")
@@ -208,6 +214,23 @@ class REBLEND_PT_active(bpy.types.Panel):
         # The backdrop *is* the plate other elements drop shadows onto, so it
         # has no plate of its own to choose between — the question only makes
         # sense for art that sits on top of one.
+        if kinds.renders_art(data.kind) and "re_samples" in active:
+            row = layout.row(align=True)
+            row.prop(active, '["re_samples"]', text="Samples (0 = scene)")
+            if data.kind not in (kinds.BACKDROP, kinds.DISPLAY) and "re_full_bleed" in active:
+                row.prop(active, '["re_full_bleed"]', text="Full Bleed")
+        if kinds.renders_art(data.kind):
+            variants = operators.element_variants(active)
+            row = layout.row(align=True)
+            for child in variants:
+                name = child["re_variant"]
+                row.operator("reblend.use_variant", text=name,
+                             depress=active.get("re_variant") == name).name = name
+            row.operator("reblend.add_variant", text="" if variants else "Add Art Variant",
+                         icon="ADD")
+        if kinds.renders_art(data.kind) and "re_emission_pass" in active:
+            layout.prop(active, '["re_emission_pass"]',
+                        text="Emission Pass (Design/emission/)")
         if kinds.renders_art(data.kind) and data.kind != kinds.BACKDROP:
             layout.prop(settings, "active_shadow_owner")
             if (data.shadow_owner == kinds.SHADOW_ELEMENT
@@ -376,6 +399,7 @@ class REBLEND_PT_rig(bpy.types.Panel):
         layout.prop_search(settings, "active_rotor", active, "all_objects",
                            text="Rotor")
         layout.prop(settings, "active_sweep_deg", text="Sweep")
+        layout.prop(settings, "active_zero_deg", text="Pointer at Rest")
         if settings.rotation_axis == "auto":
             axis = f"the Camera Axis ({_axis_short(settings.camera_axis)})"
         else:
@@ -414,6 +438,7 @@ class REBLEND_PT_rig(bpy.types.Panel):
         col = layout.column()
         col.enabled = table is not None and bool(table.controls())
         col.operator("reblend.generate_rig", icon="DRIVER")
+        layout.operator("reblend.centre_selected", icon="PIVOT_BOUNDBOX")
         if table is None:
             layout.label(text="Fix the state table first", icon="ERROR")
         elif not table.controls():
@@ -445,11 +470,65 @@ class REBLEND_PT_render(bpy.types.Panel):
             warn = layout.row()
             warn.alert = True
             warn.label(text="Cast Shadows needs Cycles", icon="ERROR")
+        if settings.inactive_render == "SHADOW":
+            layout.prop(settings, "caster_bounce")
+        layout.prop(settings, "panel_isolation")
+        layout.prop(settings, "alpha_floor")
         col = layout.column(align=True)
         col.operator("reblend.render_elements", text="Render All Sheets",
                      icon="RENDER_ANIMATION").scope = "ALL"
         col.operator("reblend.render_elements", text="Render Active Sheet",
                      icon="RENDER_STILL").scope = "ACTIVE"
+
+        box = layout.box()
+        box.label(text="In a background Blender (keeps this one usable)")
+        if operators.background_running():
+            if hasattr(box, "progress"):
+                box.progress(factor=settings.render_progress / 100.0,
+                             text=settings.render_message or "rendering")
+            else:
+                box.label(text=f"{settings.render_progress:.0f} % {settings.render_message}")
+            box.operator("reblend.cancel_background_render", icon="CANCEL")
+        else:
+            row = box.row(align=True)
+            row.operator("reblend.render_background", text="Changed",
+                         icon="FILE_REFRESH").scope = "DIRTY"
+            row.operator("reblend.render_background", text="All",
+                         icon="RENDER_ANIMATION").scope = "ALL"
+            row.operator("reblend.render_background", text="Active",
+                         icon="RENDER_STILL").scope = "ACTIVE"
+        if settings.render_state != "IDLE":
+            icon = {"DONE": "CHECKMARK", "FAILED": "ERROR", "CANCELLED": "CANCEL",
+                    "RUNNING": "TIME"}.get(settings.render_state, "INFO")
+            when = f" · {settings.render_finished}" if settings.render_finished else ""
+            layout.label(text=f"{settings.render_state.title()}: "
+                              f"{settings.render_message}{when}", icon=icon)
+
+
+class REBLEND_PT_kit(bpy.types.Panel):
+    """Palette, material starters and the lighting rig (design §5.7)."""
+
+    bl_label = "Palette & Materials"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "RE-Blend"
+    bl_order = 9
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.reblend
+        row = layout.row(align=True)
+        row.prop(settings, "palette_path", text="")
+        row.operator("reblend.load_palette", text="", icon="COLOR")
+        row = layout.row(align=True)
+        row.prop(settings, "material_starter", text="")
+        row.operator("reblend.add_material_starter", text="Add", icon="MATERIAL")
+        layout.operator("reblend.add_touch_point", icon="BRUSH_DATA")
+        layout.prop(settings, "rig_template")
+        row = layout.row(align=True)
+        row.operator("reblend.add_lighting_rig", icon="LIGHT_AREA")
+        row.operator("reblend.save_rig_template", text="", icon="FILE_TICK")
 
 
 class REBLEND_PT_render_report(bpy.types.Panel):
@@ -501,8 +580,12 @@ class REBLEND_PT_validation(bpy.types.Panel):
             return
 
         if settings.findings_time:
-            layout.label(text=f"Validated {settings.findings_time}",
-                         icon="INFO")
+            age = reporting.age_text(settings.findings_time)
+            row = layout.row()
+            stale = reporting.is_stale(settings.findings_time)
+            row.alert = stale
+            row.label(text=f"Validated {age}" + (" — validate again" if stale else ""),
+                      icon="ERROR" if stale else "INFO")
         _draw_findings(layout, findings)
         layout.operator("reblend.save_report", text="Save Validation Report…",
                         icon="FILE_TICK").source = "VALIDATION"
@@ -577,6 +660,7 @@ class REBLEND_PT_preview(bpy.types.Panel):
         settings = context.scene.reblend
         row = layout.row(align=True)
         row.prop(settings, "preview_panel", text="")
+        row.prop(settings, "preview_half", toggle=True)
         row.operator("reblend.preview_panel", text="Preview", icon="RENDERLAYERS")
 
         playable = []
@@ -654,7 +738,7 @@ class REBLEND_PT_sync(bpy.types.Panel):
                 row = box.row(align=True)
                 row.label(text=f"{item.path} · {item.status}",
                           icon=_STATUS_ICONS.get(item.status, "QUESTION"))
-                row.prop(item, "resolution", text="")
+                row.prop(item, "resolution_ui", text="")
                 for line in reporting.wrap_text(item.summary):
                     box.label(text=line)
             layout.operator("reblend.apply_sync", icon="CHECKMARK")
@@ -699,6 +783,7 @@ CLASSES = (
     REBLEND_PT_rig,
     REBLEND_PT_render,
     REBLEND_PT_render_report,
+    REBLEND_PT_kit,
     REBLEND_PT_validation,
     REBLEND_PT_preview,
     REBLEND_PT_sync,

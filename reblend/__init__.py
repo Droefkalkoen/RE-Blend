@@ -74,6 +74,20 @@ def _migrate_open_file():
 
 def _migrate_on_load(_filepath=None, _none=None) -> None:
     _migrate_all()
+    # A report saved with the file describes the scene as it was then (Skou
+    # feedback #7: months-old findings read as current). Refresh it once the
+    # file is up, if there is one to refresh.
+    import bpy
+
+    if not bpy.app.background:
+        bpy.app.timers.register(_revalidate_loaded, first_interval=0.5)
+
+
+def _revalidate_loaded():
+    from .ui import operators
+
+    operators.revalidate_quietly()
+    return None
 
 
 try:  # persistent survives file loads; only decoratable inside Blender
@@ -84,14 +98,23 @@ except ModuleNotFoundError:
     pass
 
 
-def cli() -> None:
-    """Headless entry point (design §7).
+def cli(argv=None) -> int:
+    """Headless entry point (design §7); see :mod:`reblend.headless`.
 
     Invoked as::
 
         blender -b MyDevice.blend --python-expr "import reblend; reblend.cli()" -- \\
             render --all --project /path/to/mydevice --strict
 
-    Implemented in M3; defined now so the invocation contract is stable.
+    or, for an extension install, with ``--python <package>/run_cli.py``.
+    Exits Blender with the command's exit code when run from Blender's
+    command line; returns it when called with ``argv`` (tests, scripts).
     """
-    raise NotImplementedError("headless CLI arrives in milestone M3")
+    from . import headless as _cli
+
+    code = _cli.main(argv)
+    if argv is None:
+        import sys
+
+        sys.exit(code)
+    return code

@@ -19,9 +19,13 @@ def register() -> None:
         for cls in module.CLASSES:
             bpy.utils.register_class(cls)
     props.attach()
+    if operators.live_overlap_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(operators.live_overlap_handler)
 
 
 def unregister() -> None:
+    if operators.live_overlap_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(operators.live_overlap_handler)
     props.detach()
     for module in reversed(_MODULES):
         for cls in reversed(module.CLASSES):
